@@ -5,6 +5,7 @@
 //! construction du routeur ([`build_app`]) séparément du démarrage réseau, pour
 //! des tests d'intégration déterministes.
 
+pub mod accounts;
 pub mod config;
 pub mod health;
 pub mod observability;

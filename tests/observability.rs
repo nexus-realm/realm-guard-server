@@ -9,6 +9,7 @@ async fn metrics_endpoint_exposes_prometheus() {
     let state = realm_guard_server::AppState::connect(
         "postgres://realmguard:realmguard@localhost/realmguard",
         "redis://localhost:6379",
+        Vec::new(),
     )
     .unwrap();
     let app = realm_guard_server::build_app(state);

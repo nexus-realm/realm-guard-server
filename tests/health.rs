@@ -9,6 +9,7 @@ async fn healthz_returns_ok_and_core_version() {
     let state = realm_guard_server::AppState::connect(
         "postgres://realmguard:realmguard@localhost/realmguard",
         "redis://localhost:6379",
+        Vec::new(),
     )
     .unwrap();
     let app = realm_guard_server::build_app(state);

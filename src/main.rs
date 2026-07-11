@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use realm_guard_server::{AppState, Config, build_app};
+use realm_guard_server::{AppState, Config, accounts, build_app};
+use sqlx::postgres::PgPoolOptions;
 
 fn main() -> anyhow::Result<()> {
     // Sentry doit être initialisé avant le runtime async ; le guard vit toute la
@@ -22,14 +23,22 @@ fn main() -> anyhow::Result<()> {
 /// Charge la config, ouvre le socket et sert jusqu'à l'arrêt.
 async fn run() -> anyhow::Result<()> {
     let config = Config::from_env()?;
-    let state = AppState::connect(&config.database_url, &config.redis_url)?;
 
-    // Applique les migrations au démarrage (nécessite Postgres joignable).
+    // Pool dédié au démarrage : migrations + bootstrap du secret serveur OPAQUE.
+    let bootstrap_db = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_lazy(&config.database_url)
+        .context("pool de démarrage")?;
     sqlx::migrate!()
-        .run(&state.db)
+        .run(&bootstrap_db)
         .await
         .context("application des migrations")?;
+    let opaque_setup = accounts::bootstrap_opaque_setup(&bootstrap_db)
+        .await
+        .context("bootstrap du secret serveur OPAQUE")?;
+    bootstrap_db.close().await;
 
+    let state = AppState::connect(&config.database_url, &config.redis_url, opaque_setup)?;
     let app = build_app(state);
 
     let listener = tokio::net::TcpListener::bind(config.addr)
