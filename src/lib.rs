@@ -7,14 +7,31 @@
 
 pub mod config;
 pub mod health;
+pub mod observability;
+pub mod state;
 
-use axum::Router;
 use axum::routing::get;
+use axum::{Router, middleware};
+use tower_http::trace::TraceLayer;
 
 pub use config::Config;
+pub use state::AppState;
 
 /// Construit le routeur de l'application, sans ouvrir de socket — utilisable tel
 /// quel dans les tests d'intégration (via `tower::ServiceExt::oneshot`).
-pub fn build_app() -> Router {
-    Router::new().route("/healthz", get(health::healthz))
+///
+/// Routes : `/healthz` (vivacité), `/readyz` (disponibilité DB+Redis),
+/// `/metrics` (Prometheus). Les requêtes sont instrumentées (métriques + trace).
+pub fn build_app(state: AppState) -> Router {
+    let metrics = observability::metrics_handle();
+    Router::new()
+        .route("/healthz", get(health::healthz))
+        .route("/readyz", get(health::readyz))
+        .route(
+            "/metrics",
+            get(move || std::future::ready(metrics.render())),
+        )
+        .route_layer(middleware::from_fn(observability::track_metrics))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
 }

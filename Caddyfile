@@ -1,0 +1,6 @@
+# Développement local : proxy en clair vers l'app.
+# En production, remplacer `:80` par le domaine (ex. realmguard.nexusrealm.fr) —
+# Caddy provisionne alors TLS automatiquement (Let's Encrypt).
+:80 {
+	reverse_proxy app:8080
+}
