@@ -6,7 +6,12 @@ use tower::ServiceExt; // apporte `oneshot`
 
 #[tokio::test]
 async fn metrics_endpoint_exposes_prometheus() {
-    let app = realm_guard_server::build_app();
+    let state = realm_guard_server::AppState::connect(
+        "postgres://realmguard:realmguard@localhost/realmguard",
+        "redis://localhost:6379",
+    )
+    .unwrap();
+    let app = realm_guard_server::build_app(state);
 
     // Une requête préalable pour générer au moins une métrique HTTP.
     let _ = app

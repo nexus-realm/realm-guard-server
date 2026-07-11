@@ -6,7 +6,12 @@ use tower::ServiceExt; // apporte `oneshot`
 
 #[tokio::test]
 async fn healthz_returns_ok_and_core_version() {
-    let app = realm_guard_server::build_app();
+    let state = realm_guard_server::AppState::connect(
+        "postgres://realmguard:realmguard@localhost/realmguard",
+        "redis://localhost:6379",
+    )
+    .unwrap();
+    let app = realm_guard_server::build_app(state);
 
     let response = app
         .oneshot(

@@ -13,6 +13,7 @@ axum = "0.8"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 realm-guard-core = { path = "../realm-guard-core" }
+redis = { version = "1", features = ["tokio-comp"] }
 sentry = { version = "0.46", default-features = false, features = [
     "backtrace",
     "contexts",
@@ -21,6 +22,13 @@ sentry = { version = "0.46", default-features = false, features = [
     "rustls",
 ] }
 serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "macros",
+    "migrate",
+] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
