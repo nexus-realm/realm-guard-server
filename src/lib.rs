@@ -6,9 +6,11 @@
 //! des tests d'intégration déterministes.
 
 pub mod accounts;
+pub mod auth_api;
 pub mod config;
 pub mod health;
 pub mod observability;
+pub mod sessions;
 pub mod state;
 
 use axum::routing::get;
@@ -32,7 +34,32 @@ pub fn build_app(state: AppState) -> Router {
             "/metrics",
             get(move || std::future::ready(metrics.render())),
         )
+        .merge(auth_api::routes())
         .route_layer(middleware::from_fn(observability::track_metrics))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Applique les migrations et bootstrappe le secret serveur OPAQUE (généré au
+/// premier boot). Renvoie le setup sérialisé. **Nécessite Postgres joignable.**
+///
+/// # Errors
+/// Base injoignable, migration ou bootstrap en échec.
+pub async fn migrate_and_bootstrap(database_url: &str) -> anyhow::Result<Vec<u8>> {
+    use anyhow::Context;
+    use sqlx::postgres::PgPoolOptions;
+
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_lazy(database_url)
+        .context("pool de démarrage")?;
+    sqlx::migrate!()
+        .run(&pool)
+        .await
+        .context("application des migrations")?;
+    let setup = accounts::bootstrap_opaque_setup(&pool)
+        .await
+        .context("bootstrap du secret serveur OPAQUE")?;
+    pool.close().await;
+    Ok(setup)
 }

@@ -86,3 +86,20 @@ pub async fn username_taken(db: &PgPool, username: &str) -> anyhow::Result<bool>
         .context("vérification du username")?;
     Ok(found.is_some())
 }
+
+/// Récupère `(id, password_file)` d'un compte par `username` (`None` si inconnu).
+///
+/// # Errors
+/// Erreur d'accès à la base.
+pub async fn account_credentials(
+    db: &PgPool,
+    username: &str,
+) -> anyhow::Result<Option<(Uuid, Vec<u8>)>> {
+    let row: Option<(Uuid, Vec<u8>)> =
+        sqlx::query_as("SELECT id, password_file FROM accounts WHERE username = $1")
+            .bind(username)
+            .fetch_optional(db)
+            .await
+            .context("lecture des credentials du compte")?;
+    Ok(row)
+}

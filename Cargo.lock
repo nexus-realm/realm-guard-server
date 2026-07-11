@@ -2291,6 +2291,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "metrics",
  "metrics-exporter-prometheus",
  "realm-guard-core",
@@ -2298,6 +2299,7 @@ dependencies = [
  "rustls",
  "sentry",
  "serde",
+ "serde_json",
  "sqlx",
  "tokio",
  "tower",
