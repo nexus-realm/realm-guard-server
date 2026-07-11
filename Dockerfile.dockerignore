@@ -1,0 +1,4 @@
+# Chemins relatifs au contexte de build (dossier parent `development/`).
+# Évite d'envoyer les artefacts de compilation et l'historique git au daemon.
+**/target
+**/.git
