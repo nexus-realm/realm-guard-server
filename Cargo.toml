@@ -2,7 +2,7 @@
 name = "realm-guard-server"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Sync server (Axum) for Realm Guard — E2EE multi-device."
 repository = "https://github.com/nexus-realm/realm-guard-server"
 publish = false
@@ -14,6 +14,7 @@ metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 realm-guard-core = { path = "../realm-guard-core" }
 redis = { version = "1", features = ["tokio-comp"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 sentry = { version = "0.46", default-features = false, features = [
     "backtrace",
     "contexts",
@@ -24,7 +25,7 @@ sentry = { version = "0.46", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
-    "tls-rustls",
+    "tls-rustls-ring",
     "postgres",
     "macros",
     "migrate",

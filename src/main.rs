@@ -10,6 +10,7 @@ fn main() -> anyhow::Result<()> {
     // durée du processus (flush des événements au drop).
     let _sentry = init_sentry();
     init_tracing();
+    install_crypto_provider();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -72,6 +73,17 @@ fn init_tracing() {
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     fmt().with_env_filter(filter).init();
+}
+
+/// Installe le provider crypto rustls par défaut (ring), levant toute ambiguïté
+/// quand plusieurs providers sont compilés dans l'arbre (ring + aws-lc-rs).
+fn install_crypto_provider() {
+    if rustls::crypto::ring::default_provider()
+        .install_default()
+        .is_err()
+    {
+        tracing::warn!("provider crypto rustls déjà installé");
+    }
 }
 
 /// Attend un signal d'arrêt (Ctrl-C) pour un arrêt propre.
