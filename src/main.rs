@@ -1,12 +1,25 @@
-//! Point d'entrée du serveur : config, tracing, démarrage HTTP avec arrêt gracieux.
+//! Point d'entrée du serveur : Sentry, tracing, config, démarrage HTTP (arrêt gracieux).
+
+use std::sync::Arc;
 
 use anyhow::Context;
 use realm_guard_server::{Config, build_app};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // Sentry doit être initialisé avant le runtime async ; le guard vit toute la
+    // durée du processus (flush des événements au drop).
+    let _sentry = init_sentry();
     init_tracing();
 
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("construction du runtime tokio")?
+        .block_on(run())
+}
+
+/// Charge la config, ouvre le socket et sert jusqu'à l'arrêt.
+async fn run() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     let app = build_app();
 
@@ -24,6 +37,25 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("erreur du serveur HTTP")?;
     Ok(())
+}
+
+/// Initialise Sentry. DSN via `SENTRY_DSN` (absent → client désactivé, aucun
+/// réseau). PII désactivée + scrubbing défensif : ni contexte requête ni hostname.
+fn init_sentry() -> sentry::ClientInitGuard {
+    let dsn = std::env::var("SENTRY_DSN")
+        .ok()
+        .and_then(|s| s.parse().ok());
+    sentry::init(sentry::ClientOptions {
+        dsn,
+        release: sentry::release_name!(),
+        send_default_pii: false,
+        before_send: Some(Arc::new(|mut event: sentry::protocol::Event<'static>| {
+            event.request = None;
+            event.server_name = None;
+            Some(event)
+        })),
+        ..Default::default()
+    })
 }
 
 /// Initialise le tracing (filtre via `RUST_LOG`, défaut `info`).
