@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use realm_guard_server::{AppState, Config, build_app};
+use realm_guard_server::{AppState, Config, build_app, migrate_and_bootstrap};
 
 fn main() -> anyhow::Result<()> {
     // Sentry doit être initialisé avant le runtime async ; le guard vit toute la
@@ -22,14 +22,10 @@ fn main() -> anyhow::Result<()> {
 /// Charge la config, ouvre le socket et sert jusqu'à l'arrêt.
 async fn run() -> anyhow::Result<()> {
     let config = Config::from_env()?;
-    let state = AppState::connect(&config.database_url, &config.redis_url)?;
-
-    // Applique les migrations au démarrage (nécessite Postgres joignable).
-    sqlx::migrate!()
-        .run(&state.db)
+    let opaque_setup = migrate_and_bootstrap(&config.database_url)
         .await
-        .context("application des migrations")?;
-
+        .context("initialisation de la base")?;
+    let state = AppState::connect(&config.database_url, &config.redis_url, opaque_setup)?;
     let app = build_app(state);
 
     let listener = tokio::net::TcpListener::bind(config.addr)
