@@ -26,9 +26,11 @@ async fn build_app() -> Router {
         "postgres://realmguard:realmguard@localhost:5432/realmguard?sslmode=disable",
     );
     let redis_url = env_or("REDIS_URL", "redis://localhost:6379");
-    let setup = realm_guard_server::migrate_and_bootstrap(&db_url)
+    realm_guard_server::run_migrations(&db_url)
         .await
-        .expect("migrations + bootstrap (Postgres joignable ?)");
+        .expect("migrations (Postgres joignable ?)");
+    // Le secret serveur OPAQUE est fourni hors base : on en génère un pour le test.
+    let setup = auth::generate_server_setup();
     let state = realm_guard_server::AppState::connect(&db_url, &redis_url, setup).expect("état");
     realm_guard_server::build_app(state)
 }

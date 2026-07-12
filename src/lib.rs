@@ -72,12 +72,15 @@ fn render_metrics(
     Ok(metrics.render())
 }
 
-/// Applique les migrations et bootstrappe le secret serveur OPAQUE (généré au
-/// premier boot). Renvoie le setup sérialisé. **Nécessite Postgres joignable.**
+/// Applique les migrations de la base. **Nécessite Postgres joignable.**
+///
+/// Le secret serveur OPAQUE n'est **plus** bootstrappé ici : il est fourni hors
+/// base via la config ([`Config::from_env`]), pour ne pas le co-localiser avec les
+/// password files.
 ///
 /// # Errors
-/// Base injoignable, migration ou bootstrap en échec.
-pub async fn migrate_and_bootstrap(database_url: &str) -> anyhow::Result<Vec<u8>> {
+/// Base injoignable ou migration en échec.
+pub async fn run_migrations(database_url: &str) -> anyhow::Result<()> {
     use anyhow::Context;
     use sqlx::postgres::PgPoolOptions;
 
@@ -89,11 +92,8 @@ pub async fn migrate_and_bootstrap(database_url: &str) -> anyhow::Result<Vec<u8>
         .run(&pool)
         .await
         .context("application des migrations")?;
-    let setup = accounts::bootstrap_opaque_setup(&pool)
-        .await
-        .context("bootstrap du secret serveur OPAQUE")?;
     pool.close().await;
-    Ok(setup)
+    Ok(())
 }
 
 #[cfg(test)]

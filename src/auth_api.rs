@@ -98,6 +98,10 @@ async fn register_start(
     Json(body): Json<RegisterStartReq>,
 ) -> Result<Json<MessageResp>, StatusCode> {
     let request = decode(&body.request)?;
+    // Le 409 révèle l'existence d'un username (énumération de comptes à
+    // l'inscription) — **compromis accepté** : l'inscription doit bien dire « nom
+    // déjà pris ». La vitesse d'énumération est bornée par le rate-limit par-IP au
+    // proxy ; le *login*, lui, reste anti-énumération. Cf. `SECURITY.md`.
     if accounts::username_taken(&state.db, &body.username)
         .await
         .map_err(internal)?

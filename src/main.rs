@@ -3,9 +3,16 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use realm_guard_server::{AppState, Config, build_app, migrate_and_bootstrap};
+use realm_guard_server::{AppState, Config, build_app, run_migrations};
 
 fn main() -> anyhow::Result<()> {
+    // Sous-commande utilitaire (hors runtime async) : génère un secret serveur
+    // OPAQUE en base64 et sort. À exécuter **une fois** par déploiement, la sortie
+    // étant stockée hors base (RG_OPAQUE_SETUP_FILE / RG_OPAQUE_SETUP).
+    if std::env::args().nth(1).as_deref() == Some("generate-setup") {
+        return print_generated_setup();
+    }
+
     // Sentry doit être initialisé avant le runtime async ; le guard vit toute la
     // durée du processus (flush des événements au drop).
     let _sentry = init_sentry();
@@ -19,13 +26,25 @@ fn main() -> anyhow::Result<()> {
         .block_on(run())
 }
 
+/// Génère un `ServerSetup` OPAQUE et l'imprime en base64 (à placer dans
+/// `RG_OPAQUE_SETUP_FILE` / `RG_OPAQUE_SETUP`). Le régénérer **invaliderait tous les
+/// comptes** : à ne faire qu'une fois par déploiement.
+fn print_generated_setup() -> anyhow::Result<()> {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+
+    let setup = realm_guard_core::auth::generate_server_setup();
+    println!("{}", STANDARD.encode(setup));
+    Ok(())
+}
+
 /// Charge la config, ouvre le socket et sert jusqu'à l'arrêt.
 async fn run() -> anyhow::Result<()> {
     let config = Config::from_env()?;
-    let opaque_setup = migrate_and_bootstrap(&config.database_url)
+    run_migrations(&config.database_url)
         .await
         .context("initialisation de la base")?;
-    let state = AppState::connect(&config.database_url, &config.redis_url, opaque_setup)?;
+    let state = AppState::connect(&config.database_url, &config.redis_url, config.opaque_setup)?;
     let app = build_app(state);
 
     let listener = tokio::net::TcpListener::bind(config.addr)
