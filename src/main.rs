@@ -82,11 +82,33 @@ fn install_crypto_provider() {
     }
 }
 
-/// Attend un signal d'arrêt (Ctrl-C) pour un arrêt propre.
+/// Attend un signal d'arrêt — **SIGINT** (Ctrl-C) ou **SIGTERM** (arrêt de
+/// conteneur) — pour un arrêt gracieux.
 async fn shutdown_signal() {
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        tracing::error!(%error, "impossible d'installer le gestionnaire Ctrl-C");
-        return;
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "installation du gestionnaire Ctrl-C impossible");
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(error) => {
+                tracing::error!(%error, "installation du gestionnaire SIGTERM impossible");
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
     }
     tracing::info!("arrêt demandé");
 }

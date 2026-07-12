@@ -62,18 +62,6 @@ pub async fn insert_account(
     Ok(id)
 }
 
-/// Récupère le password file OPAQUE d'un compte par `username` (`None` si inconnu).
-///
-/// # Errors
-/// Erreur d'accès à la base.
-pub async fn password_file(db: &PgPool, username: &str) -> anyhow::Result<Option<Vec<u8>>> {
-    sqlx::query_scalar("SELECT password_file FROM accounts WHERE username = $1")
-        .bind(username)
-        .fetch_optional(db)
-        .await
-        .context("lecture du password file")
-}
-
 /// Le `username` est-il déjà pris ?
 ///
 /// # Errors

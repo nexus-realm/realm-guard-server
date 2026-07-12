@@ -15,8 +15,11 @@ pub mod state;
 pub mod vault_api;
 pub mod vault_keys;
 
+use axum::http::header::AUTHORIZATION;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use axum::{Router, middleware};
+use metrics_exporter_prometheus::PrometheusHandle;
 use tower_http::trace::TraceLayer;
 
 pub use config::Config;
@@ -29,18 +32,43 @@ pub use state::AppState;
 /// `/metrics` (Prometheus). Les requêtes sont instrumentées (métriques + trace).
 pub fn build_app(state: AppState) -> Router {
     let metrics = observability::metrics_handle();
+    // Optionnel : si `RG_METRICS_TOKEN` est défini, `/metrics` exige
+    // `Authorization: Bearer <token>` ; sinon l'endpoint reste ouvert (dev/compose).
+    // À définir en prod pour ne pas exposer la volumétrie publiquement.
+    let metrics_token = std::env::var("RG_METRICS_TOKEN").ok();
     Router::new()
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
         .route(
             "/metrics",
-            get(move || std::future::ready(metrics.render())),
+            get(move |headers: HeaderMap| {
+                std::future::ready(render_metrics(&metrics, metrics_token.as_deref(), &headers))
+            }),
         )
         .merge(auth_api::routes())
         .merge(vault_api::routes())
         .route_layer(middleware::from_fn(observability::track_metrics))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Rend les métriques Prometheus, éventuellement protégées par un token Bearer
+/// (`RG_METRICS_TOKEN`). Renvoie **401** si un token est configuré et absent/erroné.
+fn render_metrics(
+    metrics: &PrometheusHandle,
+    expected_token: Option<&str>,
+    headers: &HeaderMap,
+) -> Result<String, StatusCode> {
+    if let Some(expected) = expected_token {
+        let provided = headers
+            .get(AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "));
+        if provided != Some(expected) {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    }
+    Ok(metrics.render())
 }
 
 /// Applique les migrations et bootstrappe le secret serveur OPAQUE (généré au
@@ -65,4 +93,47 @@ pub async fn migrate_and_bootstrap(database_url: &str) -> anyhow::Result<Vec<u8>
         .context("bootstrap du secret serveur OPAQUE")?;
     pool.close().await;
     Ok(setup)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn headers_with_auth(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(value).unwrap());
+        headers
+    }
+
+    #[test]
+    fn metrics_open_when_no_token_configured() {
+        let metrics = observability::metrics_handle();
+        assert!(render_metrics(&metrics, None, &HeaderMap::new()).is_ok());
+    }
+
+    #[test]
+    fn metrics_require_correct_bearer_when_token_set() {
+        let metrics = observability::metrics_handle();
+        // Token configuré mais en-tête absent → 401.
+        assert_eq!(
+            render_metrics(&metrics, Some("s3cret"), &HeaderMap::new()).unwrap_err(),
+            StatusCode::UNAUTHORIZED
+        );
+        // Mauvais token → 401.
+        assert_eq!(
+            render_metrics(&metrics, Some("s3cret"), &headers_with_auth("Bearer nope"))
+                .unwrap_err(),
+            StatusCode::UNAUTHORIZED
+        );
+        // Bon token → OK.
+        assert!(
+            render_metrics(
+                &metrics,
+                Some("s3cret"),
+                &headers_with_auth("Bearer s3cret")
+            )
+            .is_ok()
+        );
+    }
 }

@@ -149,7 +149,8 @@ async fn login_start(
         account_id,
     };
     let blob = codec::encode(&flow).map_err(internal)?;
-    sessions::store_login_flow(&state.redis, &flow_id, &blob)
+    let conn = state.redis().await.map_err(internal)?;
+    sessions::store_login_flow(conn, &flow_id, &blob)
         .await
         .map_err(internal)?;
 
@@ -164,7 +165,7 @@ async fn login_finish(
     Json(body): Json<LoginFinishReq>,
 ) -> Result<Json<LoginFinishResp>, StatusCode> {
     let finalization = decode(&body.finalization)?;
-    let blob = sessions::take_login_flow(&state.redis, &body.flow_id)
+    let blob = sessions::take_login_flow(state.redis().await.map_err(internal)?, &body.flow_id)
         .await
         .map_err(internal)?
         .ok_or(StatusCode::UNAUTHORIZED)?;
@@ -174,7 +175,7 @@ async fn login_finish(
     auth::server_login_finish(&flow.state, &finalization).map_err(|_| StatusCode::UNAUTHORIZED)?;
     let account_id = flow.account_id.ok_or(StatusCode::UNAUTHORIZED)?;
 
-    let token = sessions::create_session(&state.redis, account_id)
+    let token = sessions::create_session(state.redis().await.map_err(internal)?, account_id)
         .await
         .map_err(internal)?;
     Ok(Json(LoginFinishResp {
@@ -201,7 +202,7 @@ impl FromRequestParts<AppState> for AuthAccount {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "))
             .ok_or(StatusCode::UNAUTHORIZED)?;
-        let account_id = sessions::session_account(&state.redis, token)
+        let account_id = sessions::session_account(state.redis().await.map_err(internal)?, token)
             .await
             .map_err(internal)?
             .ok_or(StatusCode::UNAUTHORIZED)?;
