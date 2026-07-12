@@ -10,6 +10,7 @@ pub mod auth_api;
 pub mod config;
 pub mod health;
 pub mod observability;
+pub mod rate_limit;
 pub mod sessions;
 pub mod state;
 pub mod vault_api;
