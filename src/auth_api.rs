@@ -6,8 +6,9 @@
 
 use axum::extract::{FromRequestParts, State};
 use axum::http::StatusCode;
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{AUTHORIZATION, RETRY_AFTER};
 use axum::http::request::Parts;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
@@ -17,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::state::AppState;
-use crate::{accounts, sessions};
+use crate::{accounts, rate_limit, sessions};
 
 /// Routes d'authentification (à monter dans l'app avec l'état).
 pub fn routes() -> Router<AppState> {
@@ -79,6 +80,9 @@ struct MeResp {
 struct LoginFlow {
     state: Vec<u8>,
     account_id: Option<Uuid>,
+    /// Username tel qu'envoyé au `login/start` — sert à clé le rate-limit au
+    /// `finish` (le corps du `finish` ne porte que `flow_id` + `finalization`).
+    username: String,
 }
 
 fn decode(field: &str) -> Result<Vec<u8>, StatusCode> {
@@ -94,6 +98,10 @@ async fn register_start(
     Json(body): Json<RegisterStartReq>,
 ) -> Result<Json<MessageResp>, StatusCode> {
     let request = decode(&body.request)?;
+    // Le 409 révèle l'existence d'un username (énumération de comptes à
+    // l'inscription) — **compromis accepté** : l'inscription doit bien dire « nom
+    // déjà pris ». La vitesse d'énumération est bornée par le rate-limit par-IP au
+    // proxy ; le *login*, lui, reste anti-énumération. Cf. `SECURITY.md`.
     if accounts::username_taken(&state.db, &body.username)
         .await
         .map_err(internal)?
@@ -125,8 +133,23 @@ async fn register_finish(
 async fn login_start(
     State(state): State<AppState>,
     Json(body): Json<LoginStartReq>,
-) -> Result<Json<LoginStartResp>, StatusCode> {
+) -> Result<Response, StatusCode> {
     let request = decode(&body.request)?;
+    let conn = state.redis().await.map_err(internal)?;
+
+    // Rate-limit **par compte** (complément du par-IP au proxy) : si le compte est
+    // verrouillé, on refuse tôt (429 + Retry-After) sans travail OPAQUE.
+    if let Some(retry) = rate_limit::locked_for(conn.clone(), &body.username)
+        .await
+        .map_err(internal)?
+    {
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            [(RETRY_AFTER, retry.to_string())],
+        )
+            .into_response());
+    }
+
     // Utilisateur inconnu → (None, None) : réponse fabriquée (anti-énumération).
     let (account_id, password_file) = match accounts::account_credentials(&state.db, &body.username)
         .await
@@ -147,16 +170,18 @@ async fn login_start(
     let flow = LoginFlow {
         state: started.state,
         account_id,
+        username: body.username,
     };
     let blob = codec::encode(&flow).map_err(internal)?;
-    sessions::store_login_flow(&state.redis, &flow_id, &blob)
+    sessions::store_login_flow(conn, &flow_id, &blob)
         .await
         .map_err(internal)?;
 
     Ok(Json(LoginStartResp {
         response: STANDARD.encode(started.response),
         flow_id,
-    }))
+    })
+    .into_response())
 }
 
 async fn login_finish(
@@ -164,17 +189,28 @@ async fn login_finish(
     Json(body): Json<LoginFinishReq>,
 ) -> Result<Json<LoginFinishResp>, StatusCode> {
     let finalization = decode(&body.finalization)?;
-    let blob = sessions::take_login_flow(&state.redis, &body.flow_id)
+    let conn = state.redis().await.map_err(internal)?;
+    let blob = sessions::take_login_flow(conn.clone(), &body.flow_id)
         .await
         .map_err(internal)?
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let flow: LoginFlow = codec::decode(&blob).map_err(internal)?;
 
-    // Valide la finalisation du client : échoue si mot de passe faux ou user inconnu.
-    auth::server_login_finish(&flow.state, &finalization).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    // Valide la finalisation : échoue si mot de passe faux ou user inconnu → on
+    // compte l'échec pour ce compte (rate-limit par compte).
+    if auth::server_login_finish(&flow.state, &finalization).is_err() {
+        rate_limit::record_failure(conn, &flow.username)
+            .await
+            .map_err(internal)?;
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let account_id = flow.account_id.ok_or(StatusCode::UNAUTHORIZED)?;
 
-    let token = sessions::create_session(&state.redis, account_id)
+    // Succès : on remet le compteur d'échecs à zéro, puis on émet la session.
+    rate_limit::reset(conn.clone(), &flow.username)
+        .await
+        .map_err(internal)?;
+    let token = sessions::create_session(conn, account_id)
         .await
         .map_err(internal)?;
     Ok(Json(LoginFinishResp {
@@ -201,7 +237,7 @@ impl FromRequestParts<AppState> for AuthAccount {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "))
             .ok_or(StatusCode::UNAUTHORIZED)?;
-        let account_id = sessions::session_account(&state.redis, token)
+        let account_id = sessions::session_account(state.redis().await.map_err(internal)?, token)
             .await
             .map_err(internal)?
             .ok_or(StatusCode::UNAUTHORIZED)?;

@@ -47,14 +47,10 @@ pub async fn readyz(State(state): State<AppState>) -> Result<Json<Ready>, Status
             StatusCode::SERVICE_UNAVAILABLE
         })?;
 
-    let mut conn = state
-        .redis
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|error| {
-            tracing::warn!(%error, "disponibilité : Redis injoignable");
-            StatusCode::SERVICE_UNAVAILABLE
-        })?;
+    let mut conn = state.redis().await.map_err(|error| {
+        tracing::warn!(%error, "disponibilité : Redis injoignable");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
     let _pong: String = redis::cmd("PING")
         .query_async(&mut conn)
         .await

@@ -4,9 +4,13 @@
 //!   `login/finish` : clé `login:<flow>`, TTL court, **usage unique** (`GETDEL`).
 //! - **Session** émise après login : clé `session:<token>` → `account_id`, TTL
 //!   long, **révocable** (supprimer la clé).
+//!
+//! Chaque fonction reçoit une connexion **mutualisée** ([`crate::AppState::redis`]),
+//! clonée à bas coût — pas d'ouverture de connexion par opération.
 
 use anyhow::Context;
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use uuid::Uuid;
 
 /// TTL de l'état de connexion transitoire (secondes).
@@ -27,14 +31,10 @@ fn session_key(token: &str) -> String {
 /// # Errors
 /// Erreur Redis.
 pub async fn store_login_flow(
-    redis: &redis::Client,
+    mut conn: ConnectionManager,
     flow_id: &str,
     blob: &[u8],
 ) -> anyhow::Result<()> {
-    let mut conn = redis
-        .get_multiplexed_async_connection()
-        .await
-        .context("connexion Redis")?;
     let _: () = conn
         .set_ex(login_key(flow_id), blob, LOGIN_FLOW_TTL_SECS)
         .await
@@ -47,13 +47,9 @@ pub async fn store_login_flow(
 /// # Errors
 /// Erreur Redis.
 pub async fn take_login_flow(
-    redis: &redis::Client,
+    mut conn: ConnectionManager,
     flow_id: &str,
 ) -> anyhow::Result<Option<Vec<u8>>> {
-    let mut conn = redis
-        .get_multiplexed_async_connection()
-        .await
-        .context("connexion Redis")?;
     let blob: Option<Vec<u8>> = conn
         .get_del(login_key(flow_id))
         .await
@@ -65,12 +61,11 @@ pub async fn take_login_flow(
 ///
 /// # Errors
 /// Erreur Redis.
-pub async fn create_session(redis: &redis::Client, account_id: Uuid) -> anyhow::Result<String> {
+pub async fn create_session(
+    mut conn: ConnectionManager,
+    account_id: Uuid,
+) -> anyhow::Result<String> {
     let token = Uuid::new_v4().simple().to_string();
-    let mut conn = redis
-        .get_multiplexed_async_connection()
-        .await
-        .context("connexion Redis")?;
     let _: () = conn
         .set_ex(
             session_key(&token),
@@ -86,11 +81,10 @@ pub async fn create_session(redis: &redis::Client, account_id: Uuid) -> anyhow::
 ///
 /// # Errors
 /// Erreur Redis.
-pub async fn session_account(redis: &redis::Client, token: &str) -> anyhow::Result<Option<Uuid>> {
-    let mut conn = redis
-        .get_multiplexed_async_connection()
-        .await
-        .context("connexion Redis")?;
+pub async fn session_account(
+    mut conn: ConnectionManager,
+    token: &str,
+) -> anyhow::Result<Option<Uuid>> {
     let value: Option<String> = conn
         .get(session_key(token))
         .await

@@ -26,9 +26,11 @@ async fn build_app() -> Router {
         "postgres://realmguard:realmguard@localhost:5432/realmguard?sslmode=disable",
     );
     let redis_url = env_or("REDIS_URL", "redis://localhost:6379");
-    let setup = realm_guard_server::migrate_and_bootstrap(&db_url)
+    realm_guard_server::run_migrations(&db_url)
         .await
-        .expect("migrations + bootstrap (Postgres joignable ?)");
+        .expect("migrations (Postgres joignable ?)");
+    // Le secret serveur OPAQUE est fourni hors base : on en génère un pour le test.
+    let setup = auth::generate_server_setup();
     let state = realm_guard_server::AppState::connect(&db_url, &redis_url, setup).expect("état");
     realm_guard_server::build_app(state)
 }
@@ -213,4 +215,50 @@ async fn full_opaque_auth_flow() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // --- Rate-limit par compte : 10 échecs → verrouillage (429 + Retry-After) ---
+    {
+        let victim = format!("lock-{}", uuid::Uuid::new_v4());
+        for _ in 0..10 {
+            let login = auth::client_login_start(b"peu-importe").unwrap();
+            let (status, body) = post_json(
+                &app,
+                "/auth/login/start",
+                json!({ "username": victim, "request": b64(&login.request) }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let flow_id = body["flow_id"].as_str().unwrap().to_string();
+            // Finalisation bidon → échec compté pour ce username.
+            let (status, _) = post_json(
+                &app,
+                "/auth/login/finish",
+                json!({ "flow_id": flow_id, "finalization": b64(&[0u8; 64]) }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+
+        // 11e tentative : compte verrouillé → 429 + en-tête Retry-After.
+        let login = auth::client_login_start(b"peu-importe").unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/login/start")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(
+                            &json!({ "username": victim, "request": b64(&login.request) }),
+                        )
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(response.headers().contains_key("retry-after"));
+    }
 }
