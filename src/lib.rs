@@ -12,6 +12,8 @@ pub mod health;
 pub mod observability;
 pub mod sessions;
 pub mod state;
+pub mod vault_api;
+pub mod vault_keys;
 
 use axum::routing::get;
 use axum::{Router, middleware};
@@ -35,6 +37,7 @@ pub fn build_app(state: AppState) -> Router {
             get(move || std::future::ready(metrics.render())),
         )
         .merge(auth_api::routes())
+        .merge(vault_api::routes())
         .route_layer(middleware::from_fn(observability::track_metrics))
         .layer(TraceLayer::new_for_http())
         .with_state(state)

@@ -121,6 +121,69 @@ async fn full_opaque_auth_flow() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
+    // --- VaultKey enrobée : upload (PUT) puis fetch (GET), gated par la session ---
+    {
+        let wrapped = vec![10u8, 11, 12, 13];
+        let salt = vec![20u8, 21, 22];
+        let put = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/vault/key")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(
+                            &json!({ "wrapped_key": b64(&wrapped), "salt": b64(&salt) }),
+                        )
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(put.status(), StatusCode::NO_CONTENT);
+
+        let got = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/vault/key")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(got.status(), StatusCode::OK);
+        let bytes = to_bytes(got.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            STANDARD
+                .decode(body["wrapped_key"].as_str().unwrap())
+                .unwrap(),
+            wrapped,
+        );
+        assert_eq!(
+            STANDARD.decode(body["salt"].as_str().unwrap()).unwrap(),
+            salt,
+        );
+
+        // Sans token → 401.
+        let unauth = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/vault/key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+    }
+
     // --- /auth/me sans token → 401 ---
     let response = app
         .clone()
