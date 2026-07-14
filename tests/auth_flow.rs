@@ -186,6 +186,81 @@ async fn full_opaque_auth_flow() {
         assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
     }
 
+    // --- Relais de pairing : dépôt gated, récupération par capability, usage unique ---
+    {
+        let pairing_id = "3q2-7wDerb7v3q2-7wDerbc"; // base64url-safe, arbitraire
+        let blob = vec![0xDEu8, 0xAD, 0xBE, 0xEF];
+
+        // Sans session → 401 (seul un appareil authentifié dépose).
+        let (status, _) = post_json(
+            &app,
+            &format!("/pairing/{pairing_id}"),
+            json!({ "response": b64(&blob) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Dépôt authentifié → 204.
+        let deposit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pairing/{pairing_id}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({ "response": b64(&blob) })).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deposit.status(), StatusCode::NO_CONTENT);
+
+        // Récupération SANS session (capability = pairing_id) → 200, blob intact.
+        let got = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pairing/{pairing_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(got.status(), StatusCode::OK);
+        let bytes = to_bytes(got.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(unb64(&body, "response"), blob);
+
+        // Usage unique : une seconde récupération → 404.
+        let again = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pairing/{pairing_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(again.status(), StatusCode::NOT_FOUND);
+
+        // Identifiant hors charset (pas de clé Redis arbitraire) → 400.
+        let bad = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/pairing/a%2Fb")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+    }
+
     // --- /auth/me sans token → 401 ---
     let response = app
         .clone()
