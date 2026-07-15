@@ -69,3 +69,19 @@ pub async fn revoke(db: &PgPool, account_id: Uuid, device_id: Uuid) -> anyhow::R
     .context("révocation d'appareil")?;
     Ok(result.rows_affected() > 0)
 }
+
+/// `account_id` du compte propriétaire d'un appareil **enregistré et non révoqué**
+/// (`None` sinon). Utilisé par l'authentification par clé d'appareil.
+///
+/// # Errors
+/// Erreur d'accès à la base.
+pub async fn active_account_for_pk(db: &PgPool, device_pk: &[u8]) -> anyhow::Result<Option<Uuid>> {
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT account_id FROM devices WHERE device_pk = $1 AND revoked_at IS NULL",
+    )
+    .bind(device_pk)
+    .fetch_optional(db)
+    .await
+    .context("recherche d'appareil actif")?;
+    Ok(row.map(|(id,)| id))
+}

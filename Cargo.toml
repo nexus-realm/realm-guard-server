@@ -11,6 +11,7 @@ publish = false
 anyhow = "1"
 axum = "0.8"
 base64 = "0.22"
+getrandom = "0.2"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 realm-guard-core = { path = "../realm-guard-core" }

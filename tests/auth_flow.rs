@@ -334,6 +334,83 @@ async fn full_opaque_auth_flow() {
         assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
     }
 
+    // --- Auth par clé d'appareil : register → challenge → sign → verify → session ---
+    {
+        use realm_guard_core::crypto::{device_sign, generate_device_keypair};
+
+        let keypair = generate_device_keypair().unwrap();
+
+        // La source (session courante) enregistre la clé du nouvel appareil.
+        let created = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/devices")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(
+                            &json!({ "device_pk": b64(&keypair.public), "name": "Laptop" }),
+                        )
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+
+        // Défi → signature → vérification → session d'appareil.
+        let (status, body) = post_json(
+            &app,
+            "/auth/device/challenge",
+            json!({ "device_pk": b64(&keypair.public) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let nonce = unb64(&body, "challenge");
+        let signature = device_sign(&keypair.secret, &nonce).unwrap();
+        let (status, body) = post_json(
+            &app,
+            "/auth/device/verify",
+            json!({ "device_pk": b64(&keypair.public), "signature": b64(&signature) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let device_token = body["session_token"].as_str().unwrap().to_string();
+
+        // La session de l'appareil est utilisable.
+        let me = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/auth/me")
+                    .header("authorization", format!("Bearer {device_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(me.status(), StatusCode::OK);
+
+        // Nouveau défi + mauvaise signature → 401 (usage unique côté serveur).
+        let (_, body) = post_json(
+            &app,
+            "/auth/device/challenge",
+            json!({ "device_pk": b64(&keypair.public) }),
+        )
+        .await;
+        let _ = unb64(&body, "challenge");
+        let (status, _) = post_json(
+            &app,
+            "/auth/device/verify",
+            json!({ "device_pk": b64(&keypair.public), "signature": b64(&[0u8; 64]) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
     // --- /auth/me sans token → 401 ---
     let response = app
         .clone()

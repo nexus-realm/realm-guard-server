@@ -674,6 +674,7 @@ version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
+ "pkcs8",
  "serde",
  "signature",
 ]
@@ -690,6 +691,7 @@ dependencies = [
  "sha2",
  "signature",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -2298,6 +2300,7 @@ dependencies = [
  "argon2",
  "bip39",
  "chacha20poly1305",
+ "ed25519-dalek",
  "getrandom 0.2.17",
  "hkdf",
  "opaque-ke",
@@ -2317,6 +2320,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64",
+ "getrandom 0.2.17",
  "metrics",
  "metrics-exporter-prometheus",
  "realm-guard-core",

@@ -8,6 +8,7 @@
 pub mod accounts;
 pub mod auth_api;
 pub mod config;
+pub mod device_auth_api;
 pub mod devices;
 pub mod devices_api;
 pub mod health;
@@ -53,6 +54,7 @@ pub fn build_app(state: AppState) -> Router {
         .merge(pairing_api::routes())
         .merge(vault_api::routes())
         .merge(devices_api::routes())
+        .merge(device_auth_api::routes())
         .route_layer(middleware::from_fn(observability::track_metrics))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
