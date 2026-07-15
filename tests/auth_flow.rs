@@ -186,6 +186,79 @@ async fn full_opaque_auth_flow() {
         assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
     }
 
+    // --- Registre d'appareils : enregistrement (source), liste, révocation, gating ---
+    {
+        let device_pk = b64(&[9u8; 32]);
+        let register_body = json!({ "device_pk": device_pk, "name": "iPhone" });
+
+        // Sans session → 401 (seule la source authentifiée enregistre).
+        let (status, _) = post_json(&app, "/devices", register_body.clone()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Enregistrement authentifié → 201 + id.
+        let created = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/devices")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&register_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let bytes = to_bytes(created.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let device_id = body["id"].as_str().unwrap().to_string();
+
+        // Liste → l'appareil est présent et actif.
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/devices")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let bytes = to_bytes(listed.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let entry = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == device_id)
+            .expect("appareil listé");
+        assert_eq!(entry["name"], "iPhone");
+        assert_eq!(entry["revoked"], false);
+
+        // Révocation → 204, puis seconde révocation → 404 (déjà révoqué).
+        for (i, expected) in [StatusCode::NO_CONTENT, StatusCode::NOT_FOUND]
+            .into_iter()
+            .enumerate()
+        {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("DELETE")
+                        .uri(format!("/devices/{device_id}"))
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "révocation #{i}");
+        }
+    }
+
     // --- Relais de pairing : dépôt gated, récupération par capability, usage unique ---
     {
         let pairing_id = "3q2-7wDerb7v3q2-7wDerbc"; // base64url-safe, arbitraire
