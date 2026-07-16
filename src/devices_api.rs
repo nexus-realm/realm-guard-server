@@ -25,7 +25,7 @@ const MAX_NAME_LEN: usize = 100;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/devices", get(list).post(register))
-        .route("/devices/{id}", delete(revoke))
+        .route("/devices/{id}", delete(revoke).patch(rename))
 }
 
 #[derive(Deserialize)]
@@ -39,10 +39,17 @@ struct RegisterResp {
     id: String,
 }
 
+#[derive(Deserialize)]
+struct RenameReq {
+    name: String,
+}
+
 #[derive(Serialize)]
 struct DeviceResp {
     id: String,
     name: String,
+    /// Clé publique (base64) — permet à un appareil de se reconnaître dans la liste.
+    device_pk: String,
     created_at: i64,
     revoked: bool,
 }
@@ -104,14 +111,34 @@ async fn list(
         .map_err(internal)?;
     let items = rows
         .into_iter()
-        .map(|(id, name, created_at, revoked)| DeviceResp {
+        .map(|(id, name, device_pk, created_at, revoked)| DeviceResp {
             id: id.to_string(),
             name,
+            device_pk: STANDARD.encode(device_pk),
             created_at,
             revoked,
         })
         .collect();
     Ok(Json(items))
+}
+
+/// Renomme un appareil du compte authentifié (**404** si inconnu).
+async fn rename(
+    account: AuthAccount,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<RenameReq>,
+) -> Result<StatusCode, StatusCode> {
+    let device_id = parse_id(&id)?;
+    let name = validate_name(&body.name)?;
+    if devices::rename(&state.db, account.0, device_id, &name)
+        .await
+        .map_err(internal)?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
 }
 
 /// Révoque un appareil du compte authentifié (**404** si inconnu / déjà révoqué).

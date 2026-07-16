@@ -37,13 +37,19 @@ pub async fn register(
     Ok(row.map(|(id,)| id))
 }
 
-/// Liste les appareils d'un compte : `(id, name, created_at epoch, revoked)`.
+/// Liste les appareils d'un compte : `(id, name, device_pk, created_at epoch,
+/// revoked)`. La clé publique permet à un appareil de **se reconnaître** dans la
+/// liste (« cet appareil ») — elle est publique et le compte est authentifié.
 ///
 /// # Errors
 /// Erreur d'accès à la base.
-pub async fn list(db: &PgPool, account_id: Uuid) -> anyhow::Result<Vec<(Uuid, String, i64, bool)>> {
+pub async fn list(
+    db: &PgPool,
+    account_id: Uuid,
+) -> anyhow::Result<Vec<(Uuid, String, Vec<u8>, i64, bool)>> {
     let rows = sqlx::query_as(
-        "SELECT id, name, extract(epoch FROM created_at)::bigint, (revoked_at IS NOT NULL)
+        "SELECT id, name, device_pk, extract(epoch FROM created_at)::bigint,
+                (revoked_at IS NOT NULL)
          FROM devices WHERE account_id = $1 ORDER BY created_at",
     )
     .bind(account_id)
@@ -51,6 +57,26 @@ pub async fn list(db: &PgPool, account_id: Uuid) -> anyhow::Result<Vec<(Uuid, St
     .await
     .context("liste des appareils")?;
     Ok(rows)
+}
+
+/// Renomme un appareil du compte (`false` si inconnu). Le nom est cosmétique.
+///
+/// # Errors
+/// Erreur d'accès à la base.
+pub async fn rename(
+    db: &PgPool,
+    account_id: Uuid,
+    device_id: Uuid,
+    name: &str,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query("UPDATE devices SET name = $1 WHERE id = $2 AND account_id = $3")
+        .bind(name)
+        .bind(device_id)
+        .bind(account_id)
+        .execute(db)
+        .await
+        .context("renommage d'appareil")?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// Révoque un appareil du compte (idempotent : `false` si inconnu ou déjà révoqué).

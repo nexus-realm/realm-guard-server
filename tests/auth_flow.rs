@@ -237,6 +237,27 @@ async fn full_opaque_auth_flow() {
             .expect("appareil listé");
         assert_eq!(entry["name"], "iPhone");
         assert_eq!(entry["revoked"], false);
+        // La clé publique est renvoyée : un appareil peut se reconnaître dans la
+        // liste (« cet appareil ») sans pouvoir se confondre avec un autre.
+        assert_eq!(entry["device_pk"], device_pk);
+
+        // Renommage (PATCH) → 204, puis la liste reflète le nouveau nom.
+        let renamed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/devices/{device_id}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({ "name": "iPhone de Sacha" })).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(renamed.status(), StatusCode::NO_CONTENT);
 
         // Révocation → 204, puis seconde révocation → 404 (déjà révoqué).
         for (i, expected) in [StatusCode::NO_CONTENT, StatusCode::NOT_FOUND]
