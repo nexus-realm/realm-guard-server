@@ -674,6 +674,7 @@ version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
+ "pkcs8",
  "serde",
  "signature",
 ]
@@ -690,6 +691,7 @@ dependencies = [
  "sha2",
  "signature",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -2298,6 +2300,7 @@ dependencies = [
  "argon2",
  "bip39",
  "chacha20poly1305",
+ "ed25519-dalek",
  "getrandom 0.2.17",
  "hkdf",
  "opaque-ke",
@@ -2306,6 +2309,7 @@ dependencies = [
  "serde",
  "sha2",
  "thiserror",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -2316,6 +2320,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64",
+ "getrandom 0.2.17",
  "metrics",
  "metrics-exporter-prometheus",
  "realm-guard-core",
@@ -3923,6 +3928,18 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "x25519-dalek"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
+dependencies = [
+ "curve25519-dalek",
+ "rand_core 0.6.4",
+ "serde",
+ "zeroize",
+]
 
 [[package]]
 name = "xxhash-rust"

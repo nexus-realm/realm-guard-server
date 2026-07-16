@@ -186,6 +186,252 @@ async fn full_opaque_auth_flow() {
         assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
     }
 
+    // --- Registre d'appareils : enregistrement (source), liste, révocation, gating ---
+    {
+        let device_pk = b64(&[9u8; 32]);
+        let register_body = json!({ "device_pk": device_pk, "name": "iPhone" });
+
+        // Sans session → 401 (seule la source authentifiée enregistre).
+        let (status, _) = post_json(&app, "/devices", register_body.clone()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Enregistrement authentifié → 201 + id.
+        let created = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/devices")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&register_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let bytes = to_bytes(created.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let device_id = body["id"].as_str().unwrap().to_string();
+
+        // Liste → l'appareil est présent et actif.
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/devices")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let bytes = to_bytes(listed.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let entry = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == device_id)
+            .expect("appareil listé");
+        assert_eq!(entry["name"], "iPhone");
+        assert_eq!(entry["revoked"], false);
+        // La clé publique est renvoyée : un appareil peut se reconnaître dans la
+        // liste (« cet appareil ») sans pouvoir se confondre avec un autre.
+        assert_eq!(entry["device_pk"], device_pk);
+
+        // Renommage (PATCH) → 204, puis la liste reflète le nouveau nom.
+        let renamed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/devices/{device_id}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({ "name": "iPhone de Sacha" })).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(renamed.status(), StatusCode::NO_CONTENT);
+
+        // Révocation → 204, puis seconde révocation → 404 (déjà révoqué).
+        for (i, expected) in [StatusCode::NO_CONTENT, StatusCode::NOT_FOUND]
+            .into_iter()
+            .enumerate()
+        {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("DELETE")
+                        .uri(format!("/devices/{device_id}"))
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "révocation #{i}");
+        }
+    }
+
+    // --- Relais de pairing : dépôt gated, récupération par capability, usage unique ---
+    {
+        let pairing_id = "3q2-7wDerb7v3q2-7wDerbc"; // base64url-safe, arbitraire
+        let blob = vec![0xDEu8, 0xAD, 0xBE, 0xEF];
+
+        // Sans session → 401 (seul un appareil authentifié dépose).
+        let (status, _) = post_json(
+            &app,
+            &format!("/pairing/{pairing_id}"),
+            json!({ "response": b64(&blob) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Dépôt authentifié → 204.
+        let deposit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pairing/{pairing_id}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({ "response": b64(&blob) })).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deposit.status(), StatusCode::NO_CONTENT);
+
+        // Récupération SANS session (capability = pairing_id) → 200, blob intact.
+        let got = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pairing/{pairing_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(got.status(), StatusCode::OK);
+        let bytes = to_bytes(got.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(unb64(&body, "response"), blob);
+
+        // Usage unique : une seconde récupération → 404.
+        let again = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pairing/{pairing_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(again.status(), StatusCode::NOT_FOUND);
+
+        // Identifiant hors charset (pas de clé Redis arbitraire) → 400.
+        let bad = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/pairing/a%2Fb")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // --- Auth par clé d'appareil : register → challenge → sign → verify → session ---
+    {
+        use realm_guard_core::crypto::{device_sign, generate_device_keypair};
+
+        let keypair = generate_device_keypair().unwrap();
+
+        // La source (session courante) enregistre la clé du nouvel appareil.
+        let created = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/devices")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(
+                            &json!({ "device_pk": b64(&keypair.public), "name": "Laptop" }),
+                        )
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+
+        // Défi → signature → vérification → session d'appareil.
+        let (status, body) = post_json(
+            &app,
+            "/auth/device/challenge",
+            json!({ "device_pk": b64(&keypair.public) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let nonce = unb64(&body, "challenge");
+        let signature = device_sign(&keypair.secret, &nonce).unwrap();
+        let (status, body) = post_json(
+            &app,
+            "/auth/device/verify",
+            json!({ "device_pk": b64(&keypair.public), "signature": b64(&signature) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let device_token = body["session_token"].as_str().unwrap().to_string();
+
+        // La session de l'appareil est utilisable.
+        let me = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/auth/me")
+                    .header("authorization", format!("Bearer {device_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(me.status(), StatusCode::OK);
+
+        // Nouveau défi + mauvaise signature → 401 (usage unique côté serveur).
+        let (_, body) = post_json(
+            &app,
+            "/auth/device/challenge",
+            json!({ "device_pk": b64(&keypair.public) }),
+        )
+        .await;
+        let _ = unb64(&body, "challenge");
+        let (status, _) = post_json(
+            &app,
+            "/auth/device/verify",
+            json!({ "device_pk": b64(&keypair.public), "signature": b64(&[0u8; 64]) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
     // --- /auth/me sans token → 401 ---
     let response = app
         .clone()
