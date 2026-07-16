@@ -188,7 +188,13 @@ async fn full_opaque_auth_flow() {
 
     // --- Registre d'appareils : enregistrement (source), liste, révocation, gating ---
     {
-        let device_pk = b64(&[9u8; 32]);
+        // Clé **unique par exécution** : une clé codée en dur rendrait le test
+        // non rejouable — au 2ᵉ passage, le compte neuf réclamerait la clé du compte
+        // précédent, et le serveur la refuserait (409, garde-fou cross-compte).
+        let mut pk = [0u8; 32];
+        pk[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        pk[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        let device_pk = b64(&pk);
         let register_body = json!({ "device_pk": device_pk, "name": "iPhone" });
 
         // Sans session → 401 (seule la source authentifiée enregistre).
@@ -430,6 +436,116 @@ async fn full_opaque_auth_flow() {
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // --- Log de deltas : push, pull par curseur, pagination, gating ---
+    {
+        // Sans session → 401 (le log est privé au compte).
+        let (status, _) =
+            post_json(&app, "/sync/deltas", json!({ "payload": b64(&[1, 2, 3]) })).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Pousse trois deltas opaques.
+        let mut seqs = Vec::new();
+        for payload in [vec![1u8, 1], vec![2u8, 2], vec![3u8, 3]] {
+            let pushed = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/sync/deltas")
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&json!({ "payload": b64(&payload) })).unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(pushed.status(), StatusCode::CREATED);
+            let bytes = to_bytes(pushed.into_body(), usize::MAX).await.unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            seqs.push(body["seq"].as_i64().unwrap());
+        }
+        // Le curseur est strictement monotone.
+        assert!(seqs[0] < seqs[1] && seqs[1] < seqs[2]);
+
+        // Tirage depuis le début du compte : on retrouve les trois, dans l'ordre.
+        let pulled = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/sync/deltas?since={}", seqs[0] - 1))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pulled.status(), StatusCode::OK);
+        let bytes = to_bytes(pulled.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let items = body["deltas"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(unb64(&items[0], "payload"), vec![1u8, 1]);
+        assert_eq!(items[2]["seq"].as_i64().unwrap(), seqs[2]);
+        assert_eq!(body["latest"].as_i64().unwrap(), seqs[2]);
+
+        // Curseur au dernier seq → rien de neuf (le client est à jour).
+        let empty = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/sync/deltas?since={}", seqs[2]))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(empty.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body["deltas"].as_array().unwrap().is_empty());
+        assert_eq!(body["latest"].as_i64().unwrap(), seqs[2]);
+
+        // Pagination : `limit` borne la page, `latest` dit qu'il reste à tirer.
+        let page = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/sync/deltas?since={}&limit=1", seqs[0] - 1))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(page.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["deltas"].as_array().unwrap().len(), 1);
+        assert_eq!(body["latest"].as_i64().unwrap(), seqs[2]);
+
+        // Payload vide → 400 (garde-fou).
+        let (status, _) = {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/sync/deltas")
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&json!({ "payload": "" })).unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            (resp.status(), ())
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     // --- /auth/me sans token → 401 ---
