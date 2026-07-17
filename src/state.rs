@@ -69,4 +69,18 @@ impl AppState {
             .context("connexion Redis")?;
         Ok(manager.clone())
     }
+
+    /// Ouvre une connexion Redis **dédiée pub/sub**. Contrairement à [`Self::redis`]
+    /// (multiplexée), le pub/sub monopolise sa connexion — une par abonné WebSocket.
+    /// Simple et suffisant pour un déploiement auto-hébergé ; à multiplexer si le
+    /// nombre d'appareils connectés simultanément le justifie.
+    ///
+    /// # Errors
+    /// Redis injoignable.
+    pub async fn redis_pubsub(&self) -> anyhow::Result<redis::aio::PubSub> {
+        self.redis_client
+            .get_async_pubsub()
+            .await
+            .context("connexion Redis pub/sub")
+    }
 }

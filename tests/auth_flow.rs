@@ -548,6 +548,179 @@ async fn full_opaque_auth_flow() {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
+    // --- Snapshot + compaction : le curseur trop ancien doit échouer bruyamment ---
+    {
+        // Curseur du compte à ce stade (les deltas du bloc précédent sont là).
+        let cursor_before = {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/sync/deltas?since=0")
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            body["latest"].as_i64().unwrap()
+        };
+
+        // Pas encore de snapshot → 404.
+        let none = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/sync/snapshot")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(none.status(), StatusCode::NOT_FOUND);
+
+        let snapshot = vec![42u8; 64];
+        let put_snapshot = |payload: Vec<u8>, covers: i64| {
+            let app = app.clone();
+            let token = token.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri("/sync/snapshot")
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(
+                                &json!({ "payload": b64(&payload), "covers_seq": covers }),
+                            )
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        // Prétendre couvrir au-delà du log → 400 (masquerait des deltas à venir).
+        let too_far = put_snapshot(snapshot.clone(), cursor_before + 100).await;
+        assert_eq!(too_far.status(), StatusCode::BAD_REQUEST);
+
+        // Publication légitime → compacte les deltas couverts.
+        let published = put_snapshot(snapshot.clone(), cursor_before).await;
+        assert_eq!(published.status(), StatusCode::OK);
+        let bytes = to_bytes(published.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body["purged"].as_u64().unwrap() >= 3, "log compacté");
+
+        // Relecture du snapshot.
+        let got = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/sync/snapshot")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(got.status(), StatusCode::OK);
+        let bytes = to_bytes(got.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(unb64(&body, "payload"), snapshot);
+        assert_eq!(body["covers_seq"].as_i64().unwrap(), cursor_before);
+
+        // **Le point crucial** : un curseur antérieur au snapshot → 410, jamais une
+        // page tronquée. Sans ça, l'appareil raterait tout le passé en silence.
+        let stale = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/sync/deltas?since=0")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale.status(), StatusCode::GONE);
+
+        // Curseur à jour (= covers_seq) → tirage normal.
+        let fresh = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/sync/deltas?since={cursor_before}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fresh.status(), StatusCode::OK);
+
+        // Republier au **même** covers_seq reste possible une fois le log compacté :
+        // le repère haut tient compte de l'historique déjà couvert, pas seulement
+        // des deltas restants (qui viennent d'être purgés).
+        let republished = put_snapshot(vec![43u8; 64], cursor_before).await;
+        assert_eq!(republished.status(), StatusCode::OK);
+
+        // Régression de covers_seq → 409 (compacter sur un état antérieur perdrait
+        // les deltas intermédiaires).
+        if cursor_before > 0 {
+            let older = put_snapshot(snapshot.clone(), cursor_before - 1).await;
+            assert_eq!(older.status(), StatusCode::CONFLICT);
+        }
+
+        // Un delta postérieur au snapshot survit à la compaction et reste tirable.
+        let (status, body) = {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/sync/deltas")
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&json!({ "payload": b64(&[7u8, 7]) })).unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+        };
+        assert_eq!(status, StatusCode::CREATED);
+        let new_seq = body["seq"].as_i64().unwrap();
+
+        let after = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/sync/deltas?since={cursor_before}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(after.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let items = body["deltas"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["seq"].as_i64().unwrap(), new_seq);
+        assert_eq!(unb64(&items[0], "payload"), vec![7u8, 7]);
+    }
+
     // --- /auth/me sans token → 401 ---
     let response = app
         .clone()
