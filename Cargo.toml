@@ -44,4 +44,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 base64 = "0.22"
 realm-guard-core = { path = "../realm-guard-core" }
 serde_json = "1"
+# `time` n'est pas dans les features de prod de tokio ; le smoke WS en a besoin
+# (sleep/timeout). Uni aux features de prod par cargo.
+tokio = { version = "1", features = ["time"] }
+# Client WebSocket pour le smoke temps réel. Déjà vendored (transitif via axum "ws"),
+# épinglé sur la même version pour ne pas dupliquer la crate.
+tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }
