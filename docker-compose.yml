@@ -1,0 +1,72 @@
+# Stack locale (dev / smoke test). Caddy est la porte d'entrée HTTP.
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: realm-guard-server/Dockerfile
+    environment:
+      RG_SERVER_ADDR: "0.0.0.0:8080"
+      DATABASE_URL: "postgres://realmguard:realmguard@postgres:5432/realmguard"
+      REDIS_URL: "redis://redis:6379"
+      RUST_LOG: "info"
+      # ⚠️ DEV ONLY — secret serveur OPAQUE de développement (partagé, sans valeur).
+      # En prod : NE PAS réutiliser. Générer UNE fois avec
+      #   docker compose run --rm app generate-setup
+      # puis fournir la valeur via un secret monté (RG_OPAQUE_SETUP_FILE). La
+      # régénérer invaliderait tous les comptes.
+      RG_OPAQUE_SETUP: "hXSpX6hlNwFfb9CT6ejrqcvBldLjijuKNP8f4dgLh2DOHNJwkCiBK26OlZQ8Nftn/sgnezf6k+1RLBv99PA/9x4ztaK4bh5H/3E8Y8ZvNj/cNeOeaLsszKJROR2UxZkPUAR+0T0p1O2jjklF3a6Kd7+tF4O4tbeHacChdARUmUE="
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: realmguard
+      POSTGRES_PASSWORD: realmguard
+      POSTGRES_DB: realmguard
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U realmguard -d realmguard"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - app
+    ports:
+      - "8080:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest # à épingler en production
+    depends_on:
+      - app
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

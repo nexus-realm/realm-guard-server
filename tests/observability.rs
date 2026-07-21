@@ -1,11 +1,11 @@
-//! Test d'intégration de la sonde `/healthz` (sans ouvrir de socket).
+//! Test d'intégration : l'endpoint `/metrics` expose du Prometheus.
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt; // apporte `oneshot`
 
 #[tokio::test]
-async fn healthz_returns_ok_and_core_version() {
+async fn metrics_endpoint_exposes_prometheus() {
     let state = realm_guard_server::AppState::connect(
         "postgres://realmguard:realmguard@localhost/realmguard",
         "redis://localhost:6379",
@@ -14,7 +14,9 @@ async fn healthz_returns_ok_and_core_version() {
     .unwrap();
     let app = realm_guard_server::build_app(state);
 
-    let response = app
+    // Une requête préalable pour générer au moins une métrique HTTP.
+    let _ = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/healthz")
@@ -24,17 +26,21 @@ async fn healthz_returns_ok_and_core_version() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
 
+    assert_eq!(response.status(), StatusCode::OK);
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(
-        body.contains("\"status\":\"ok\""),
-        "corps inattendu : {body}"
-    );
-    // Le champ est renseigné par realm_guard_core → valide le lien de dépendance.
-    assert!(
-        body.contains("\"core_version\""),
-        "corps inattendu : {body}"
+        body.contains("http_requests_total"),
+        "métriques inattendues : {body}"
     );
 }

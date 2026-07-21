@@ -2,19 +2,52 @@
 name = "realm-guard-server"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Sync server (Axum) for Realm Guard — E2EE multi-device."
 repository = "https://github.com/nexus-realm/realm-guard-server"
 publish = false
 
 [dependencies]
 anyhow = "1"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+futures-util = { version = "0.3", default-features = false }
+getrandom = "0.2"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
 realm-guard-core = { path = "../realm-guard-core" }
+redis = { version = "1", features = ["tokio-comp", "connection-manager"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+sentry = { version = "0.46", default-features = false, features = [
+    "backtrace",
+    "contexts",
+    "panic",
+    "reqwest",
+    "rustls",
+] }
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "macros",
+    "migrate",
+    "uuid",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync"] }
+tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+base64 = "0.22"
+realm-guard-core = { path = "../realm-guard-core" }
+serde_json = "1"
+# `time` n'est pas dans les features de prod de tokio ; le smoke WS en a besoin
+# (sleep/timeout). Uni aux features de prod par cargo.
+tokio = { version = "1", features = ["time"] }
+# Client WebSocket pour le smoke temps réel. Déjà vendored (transitif via axum "ws"),
+# épinglé sur la même version pour ne pas dupliquer la crate.
+tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }
