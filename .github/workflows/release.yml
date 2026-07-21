@@ -1,0 +1,134 @@
+# CD de realm-guard-server (miroir de realm-guard-core).
+# Conventional commits → git-cliff : bump Cargo.toml/Cargo.lock + CHANGELOG + tag.
+#   push staging → coupe une version (pré-release GitHub)
+#   push main (ou dispatch) → promeut la pré-release en release
+# Service : aucun artefact attaché — le tag marque le commit déployable ; l'image
+# est construite au déploiement (cf. Dockerfile / docker-compose.yml).
+name: Release
+
+on:
+  push:
+    branches: [staging, main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag à promouvoir (défaut : version de Cargo.toml)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── Coupe de version : push staging → bump + changelog + tag + pré-release ──
+  cut:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # pousse le commit chore(release) + le tag
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Install git-cliff + cargo-edit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff,cargo-edit
+
+      - name: Compute next version
+        id: bump
+        run: |
+          RAW=$(git cliff --bumped-version)
+          VERSION="${RAW#v}"
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Rien à publier (le tag $TAG existe déjà)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Prochaine version : $TAG"
+          fi
+
+      - name: Bump Cargo.toml + Cargo.lock
+        if: steps.bump.outputs.skip != 'true'
+        run: cargo set-version "${{ steps.bump.outputs.version }}"
+
+      - name: Generate changelog + release notes
+        if: steps.bump.outputs.skip != 'true'
+        run: |
+          git cliff --tag "${{ steps.bump.outputs.tag }}" -o CHANGELOG.md
+          git cliff --tag "${{ steps.bump.outputs.tag }}" --latest -o RELEASE_NOTES.md
+
+      - name: Commit, tag, push
+        if: steps.bump.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore(release): $TAG"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "HEAD:staging"
+          git push origin "$TAG"
+
+      - name: Publish GitHub pre-release
+        if: steps.bump.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.bump.outputs.tag }}
+          name: ${{ steps.bump.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Promotion : push main (ou dispatch) → pré-release → release ────────────
+  promote:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            VER=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/^version = "([^"]+)".*/\1/')
+            TAG="v$VER"
+          else
+            TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 30 \
+                    --json tagName,isPrerelease --jq 'map(select(.isPrerelease)) | .[0].tagName')
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "::error::Aucune pré-release à promouvoir."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Promotion de $TAG."
+
+      - name: Promote pre-release to full release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ steps.tag.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease=false --latest
