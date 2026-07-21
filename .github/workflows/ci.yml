@@ -80,7 +80,9 @@ jobs:
           repository: nexus-realm/realm-guard-core
           # Le cœur est pris sur la même branche cible que la PR serveur
           # (feature→develop ⇒ cœur `develop`), pour rester cohérent avec le lock.
-          ref: ${{ github.base_ref }}
+          # Sur un `push` (pas de PR), `base_ref` est **vide** : sans ce repli, le
+          # checkout retomberait silencieusement sur la branche par défaut du cœur.
+          ref: ${{ github.base_ref || github.ref_name }}
           ssh-key: ${{ secrets.CORE_REPO_DEPLOY_KEY }}
           path: realm-guard-core
       - uses: dtolnay/rust-toolchain@1.97.0
@@ -120,7 +122,9 @@ jobs:
           repository: nexus-realm/realm-guard-core
           # Le cœur est pris sur la même branche cible que la PR serveur
           # (feature→develop ⇒ cœur `develop`), pour rester cohérent avec le lock.
-          ref: ${{ github.base_ref }}
+          # Sur un `push` (pas de PR), `base_ref` est **vide** : sans ce repli, le
+          # checkout retomberait silencieusement sur la branche par défaut du cœur.
+          ref: ${{ github.base_ref || github.ref_name }}
           ssh-key: ${{ secrets.CORE_REPO_DEPLOY_KEY }}
           path: realm-guard-core
       - uses: EmbarkStudios/cargo-deny-action@v2
@@ -143,7 +147,9 @@ jobs:
           repository: nexus-realm/realm-guard-core
           # Le cœur est pris sur la même branche cible que la PR serveur
           # (feature→develop ⇒ cœur `develop`), pour rester cohérent avec le lock.
-          ref: ${{ github.base_ref }}
+          # Sur un `push` (pas de PR), `base_ref` est **vide** : sans ce repli, le
+          # checkout retomberait silencieusement sur la branche par défaut du cœur.
+          ref: ${{ github.base_ref || github.ref_name }}
           ssh-key: ${{ secrets.CORE_REPO_DEPLOY_KEY }}
           path: realm-guard-core
       - name: Build de l'image (contexte = racine avec les deux crates)
