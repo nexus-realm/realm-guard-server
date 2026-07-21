@@ -65,5 +65,5 @@ cargo deny check
 
 - **TLS obligatoire en production** (le token Bearer transite sinon en clair) —
   terminaison au reverse proxy.
-- Modèle de menace et compromis acceptés : [`SECURITY.md`](SECURITY.md).
+- Modèle de menace et compromis acceptés : [`SECURITY.md`](docs/SECURITY.md).
 - Signaler une vulnérabilité **en privé** (pas d'issue publique).
