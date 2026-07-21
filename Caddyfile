@@ -1,0 +1,48 @@
+# Développement local : proxy en clair vers l'app.
+# En production, remplacer `:80` par le domaine (ex. realmguard.nexusrealm.fr) —
+# Caddy provisionne alors TLS automatiquement (Let's Encrypt).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Rate-limit PAR IP (défense volumétrique / anti-flood).
+#
+# Complète le rate-limit PAR COMPTE de l'app (429 par username sur /auth/login) :
+# le proxy encaisse le volumétrique par IP, l'app protège chaque compte — le proxy
+# ne peut pas faire le par-compte (le username est dans le CORPS de la requête).
+#
+# ⚠️ La directive `rate_limit` n'existe PAS dans l'image `caddy:2-alpine` standard.
+# Pour l'activer :
+#   1. Construire une image Caddy avec le plugin :
+#        xcaddy build --with github.com/mholt/caddy-ratelimit
+#      et l'utiliser pour le service `caddy` du docker-compose.
+#   2. Décommenter le bloc d'options global + les blocs `rate_limit` ci-dessous.
+#
+# Derrière un CDN/LB, remplacer `{remote_host}` par l'IP réelle du client
+# (ex. `{http.request.header.X-Forwarded-For}` + `trusted_proxies`), sinon toutes
+# les requêtes partagent l'IP du proxy amont.
+#
+# {
+# 	order rate_limit before reverse_proxy
+# }
+
+:80 {
+	# Limite serrée sur les endpoints d'auth (login/register = tentatives de mdp).
+	# @auth path /auth/*
+	# rate_limit @auth {
+	# 	zone auth_ip {
+	# 		key    {remote_host}
+	# 		events 20       # ~20 req/min/IP : large pour un usage légitime, étroit pour un bot
+	# 		window 1m
+	# 	}
+	# }
+	#
+	# Garde-fou volumétrique global, plus lâche.
+	# rate_limit {
+	# 	zone global_ip {
+	# 		key    {remote_host}
+	# 		events 120
+	# 		window 1m
+	# 	}
+	# }
+
+	reverse_proxy app:8080
+}

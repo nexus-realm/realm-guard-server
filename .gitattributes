@@ -1,0 +1,11 @@
+# sqlx **checksume les octets** de chaque fichier de migration. Leurs fins de ligne
+# doivent donc être identiques partout, sinon la même migration produit deux
+# checksums selon la plateforme :
+#
+#   - CI / image Docker (Linux) → LF
+#   - checkout Windows avec core.autocrlf=true → CRLF
+#
+# Une base migrée depuis l'une puis touchée par l'autre échoue alors au démarrage
+# avec « migration N was previously applied but has been modified » — y compris en
+# production. On fige donc les migrations en LF, quelle que soit la plateforme.
+*.sql text eol=lf

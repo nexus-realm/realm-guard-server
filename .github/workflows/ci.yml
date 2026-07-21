@@ -1,0 +1,156 @@
+# CI (PR) de realm-guard-server : nommage des branches (flux GitFlow) + qualité +
+# supply chain + build de l'image Docker.
+# Flux : (feature|fix|chore)/rg-N → develop → staging → main ; hotfix/rg-N → main.
+#
+# La dépendance `path` vers realm-guard-core est résolue en CI par un checkout
+# **sibling** du cœur (deploy key lecture → secret CORE_REPO_DEPLOY_KEY).
+name: CI
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-branches:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate branch workflow
+        # Passé par l'environnement (jamais interpolé dans le script) → anti-injection.
+        env:
+          SOURCE_BRANCH: ${{ github.head_ref }}
+          TARGET_BRANCH: ${{ github.base_ref }}
+        run: |
+          echo "Vérification : $SOURCE_BRANCH -> $TARGET_BRANCH"
+
+          # develop -> staging (coupe d'une beta)
+          if [[ "$SOURCE_BRANCH" == "develop" && "$TARGET_BRANCH" == "staging" ]]; then
+            echo "✅ develop -> staging"; exit 0
+          fi
+          # staging -> main (promotion)
+          if [[ "$SOURCE_BRANCH" == "staging" && "$TARGET_BRANCH" == "main" ]]; then
+            echo "✅ staging -> main"; exit 0
+          fi
+          # hotfix/rg-N -> main
+          if [[ "$SOURCE_BRANCH" =~ ^hotfix/rg-[0-9]+$ && "$TARGET_BRANCH" == "main" ]]; then
+            echo "✅ hotfix/rg-* -> main"; exit 0
+          fi
+          # (feature|fix|chore)/rg-N -> develop
+          if [[ "$SOURCE_BRANCH" =~ ^(feature|fix|chore)/rg-[0-9]+$ && "$TARGET_BRANCH" == "develop" ]]; then
+            echo "✅ (feature|fix|chore)/rg-* -> develop"; exit 0
+          fi
+
+          # main -> develop (back-merge de release) : après une promotion, main
+          # porte le commit chore(release) + le CHANGELOG ; on les redescend dans
+          # la ligne de développement pour que les branches ne divergent pas.
+          if [[ "$SOURCE_BRANCH" == "main" && "$TARGET_BRANCH" == "develop" ]]; then
+            echo "✅ back-merge de release main -> develop"; exit 0
+          fi
+
+          echo "❌ ERREUR : nommage de branche source ou branche cible invalide."
+          echo "Règles autorisées :"
+          echo "- (feature|fix|chore)/rg-[numéro] -> develop"
+          echo "- develop -> staging"
+          echo "- staging -> main"
+          echo "- main -> develop (back-merge de release)"
+          echo "- hotfix/rg-[numéro] -> main"
+          exit 1
+
+  quality:
+    needs: check-branches
+    # Inutile de tout relancer sur une simple édition de titre/description de PR.
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout serveur
+        uses: actions/checkout@v4
+        with:
+          path: realm-guard-server
+      - name: Checkout cœur (sibling, deploy key lecture)
+        uses: actions/checkout@v4
+        with:
+          repository: nexus-realm/realm-guard-core
+          # Le cœur est pris sur la même branche cible que la PR serveur
+          # (feature→develop ⇒ cœur `develop`), pour rester cohérent avec le lock.
+          # Sur un `push` (pas de PR), `base_ref` est **vide** : sans ce repli, le
+          # checkout retomberait silencieusement sur la branche par défaut du cœur.
+          ref: ${{ github.base_ref || github.ref_name }}
+          ssh-key: ${{ secrets.CORE_REPO_DEPLOY_KEY }}
+          path: realm-guard-core
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: realm-guard-server
+      - name: Format
+        working-directory: realm-guard-server
+        run: cargo fmt --all --check
+      - name: Clippy
+        working-directory: realm-guard-server
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        working-directory: realm-guard-server
+        run: cargo test --all-features
+      - name: Docs
+        working-directory: realm-guard-server
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --all-features
+
+  deny:
+    needs: check-branches
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout serveur
+        uses: actions/checkout@v4
+        with:
+          path: realm-guard-server
+      - name: Checkout cœur (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: nexus-realm/realm-guard-core
+          # Le cœur est pris sur la même branche cible que la PR serveur
+          # (feature→develop ⇒ cœur `develop`), pour rester cohérent avec le lock.
+          # Sur un `push` (pas de PR), `base_ref` est **vide** : sans ce repli, le
+          # checkout retomberait silencieusement sur la branche par défaut du cœur.
+          ref: ${{ github.base_ref || github.ref_name }}
+          ssh-key: ${{ secrets.CORE_REPO_DEPLOY_KEY }}
+          path: realm-guard-core
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: realm-guard-server/Cargo.toml
+
+  docker-build:
+    needs: check-branches
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout serveur
+        uses: actions/checkout@v4
+        with:
+          path: realm-guard-server
+      - name: Checkout cœur (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: nexus-realm/realm-guard-core
+          # Le cœur est pris sur la même branche cible que la PR serveur
+          # (feature→develop ⇒ cœur `develop`), pour rester cohérent avec le lock.
+          # Sur un `push` (pas de PR), `base_ref` est **vide** : sans ce repli, le
+          # checkout retomberait silencieusement sur la branche par défaut du cœur.
+          ref: ${{ github.base_ref || github.ref_name }}
+          ssh-key: ${{ secrets.CORE_REPO_DEPLOY_KEY }}
+          path: realm-guard-core
+      - name: Build de l'image (contexte = racine avec les deux crates)
+        run: docker build -f realm-guard-server/Dockerfile -t realm-guard-server:ci .
