@@ -47,11 +47,19 @@ jobs:
             echo "✅ (feature|fix|chore)/rg-* -> develop"; exit 0
           fi
 
+          # main -> develop (back-merge de release) : après une promotion, main
+          # porte le commit chore(release) + le CHANGELOG ; on les redescend dans
+          # la ligne de développement pour que les branches ne divergent pas.
+          if [[ "$SOURCE_BRANCH" == "main" && "$TARGET_BRANCH" == "develop" ]]; then
+            echo "✅ back-merge de release main -> develop"; exit 0
+          fi
+
           echo "❌ ERREUR : nommage de branche source ou branche cible invalide."
           echo "Règles autorisées :"
           echo "- (feature|fix|chore)/rg-[numéro] -> develop"
           echo "- develop -> staging"
           echo "- staging -> main"
+          echo "- main -> develop (back-merge de release)"
           echo "- hotfix/rg-[numéro] -> main"
           exit 1
 
