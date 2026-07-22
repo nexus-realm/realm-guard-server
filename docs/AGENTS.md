@@ -82,9 +82,14 @@ cargo test && cargo deny check
 the difference is enormous:
 
 ```bash
-cargo cov        # unit only — ~26 %, what a bare machine gives
-cargo cov-full   # + #[ignore]d integration tests — 90.6 %, needs Postgres + Redis
+cargo cov        # unit only — 34 %, what a bare machine gives
+cargo cov-full   # + #[ignore]d integration tests — 95.2 %, needs Postgres + Redis
 ```
+
+Like every `cargo-llvm-cov` figure, that number **includes inline `#[cfg(test)]`
+modules** (~100 % covered by construction); production code alone sits at 94.6 %.
+`cov-html` / `cov-lcov` also run the integration tests — the `-unit` variants are
+the bare-machine ones.
 
 The DB modules (`accounts`, `deltas`, `sessions`, `snapshots`, `vault_keys`,
 `devices`) have **no exercise other than the integration tests**, so `cargo cov`

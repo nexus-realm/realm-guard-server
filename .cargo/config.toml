@@ -6,7 +6,7 @@
 # DEUX MODES, parce que la surface HTTP du serveur n'est atteignable qu'avec
 # Postgres + Redis joignables (les tests d'intégration sont `#[ignore]`) :
 #
-#   cargo cov        unitaires seuls — ce que donne une machine nue (~23 %).
+#   cargo cov        unitaires seuls — ce que donne une machine nue (~34 %).
 #   cargo cov-full   + tests d'intégration — nécessite la stack Docker :
 #                    `docker compose up -d` puis
 #                    DATABASE_URL=postgres://realmguard:realmguard@localhost:5432/realmguard?sslmode=disable \
@@ -39,14 +39,38 @@ cov-full = [
     "--",
     "--include-ignored",
 ]
+# Variantes `-full` : mêmes rapports, tests d'intégration compris. Ce sont
+# celles à utiliser pour un rapport publié — sans elles le HTML/lcov montre les
+# modules DB à 0 %.
 cov-html = [
     "llvm-cov",
     "--all-features",
     "--html",
     "--ignore-filename-regex",
     "(^|[/\\\\])main\\.rs$",
+    "--",
+    "--include-ignored",
 ]
 cov-lcov = [
+    "llvm-cov",
+    "--all-features",
+    "--lcov",
+    "--output-path",
+    "lcov.info",
+    "--ignore-filename-regex",
+    "(^|[/\\\\])main\\.rs$",
+    "--",
+    "--include-ignored",
+]
+# Variantes unitaires seules (machine nue, sans Postgres/Redis).
+cov-html-unit = [
+    "llvm-cov",
+    "--all-features",
+    "--html",
+    "--ignore-filename-regex",
+    "(^|[/\\\\])main\\.rs$",
+]
+cov-lcov-unit = [
     "llvm-cov",
     "--all-features",
     "--lcov",

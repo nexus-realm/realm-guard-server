@@ -65,16 +65,21 @@ cargo deny check
 
 ```bash
 rustup component add llvm-tools-preview && cargo install cargo-llvm-cov  # une fois
-cargo cov         # unitaires seuls (~26 %) — machine nue, sans base
+cargo cov         # unitaires seuls (34 %) — machine nue, sans base
 cargo cov-full    # + tests d'intégration : nécessite Postgres + Redis
-cargo cov-html    # rapport navigable : target/llvm-cov/html/index.html
+cargo cov-html    # rapport navigable (intégration comprise)
+cargo cov-lcov    # export lcov.info (intégration comprise)
 ```
 
 ⚠️ `cargo cov` seul **sous-estime largement** la couverture : les tests
 d'intégration sont `#[ignore]` (ils exigent Postgres + Redis), et les modules DB
 — `accounts`, `deltas`, `sessions`, `snapshots`, `vault_keys`, `devices` —
 n'ont pas d'autre exercice. Le chiffre qui compte est celui de `cargo cov-full` :
-**90,6 % de lignes**.
+**95,2 % de lignes**.
+
+Comme partout avec `cargo-llvm-cov`, ce chiffre **inclut les modules
+`#[cfg(test)]`** (couverts à ~100 % par construction). Sur le seul code de
+production, la couverture est de **94,6 %**.
 
 Les ports de la stack Compose ne sont pas publiés sur l'hôte ; pour lancer
 `cov-full` en local, exposer une base jetable puis pointer dessus :
