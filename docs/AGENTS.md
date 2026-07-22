@@ -73,9 +73,27 @@ cargo test && cargo deny check
 - **⚠️ Docker image embeds migrations at build** → if the DB was migrated further
   (e.g. by an e2e test), a stale `app` image crash-loops (`migration N applied but
   missing in resolved`) → `docker compose build app`.
-- **CI:** `ci.yml` only (no `release.yml` yet). Releasing v1 = **manual**: bump
-  `Cargo.toml` → 1.0.0, tag `v1.0.0`, `gh release create`. GitFlow
-  `develop→staging→main`.
+- **CI:** `ci.yml` (branch check → quality → deny → docker-build → coverage) and
+  `release.yml` (git-cliff, `initial_tag = 1.0.0`, build-once-then-promote like
+  mobile/core). Both check out the **core as a sibling** (`path:` + deploy key)
+  because of the path dependency. GitFlow `develop→staging→main`. v1.0.0 shipped.
+
+**Coverage** — `cargo-llvm-cov`, aliased in `.cargo/config.toml`. Two modes, and
+the difference is enormous:
+
+```bash
+cargo cov        # unit only — ~26 %, what a bare machine gives
+cargo cov-full   # + #[ignore]d integration tests — 90.6 %, needs Postgres + Redis
+```
+
+The DB modules (`accounts`, `deltas`, `sessions`, `snapshots`, `vault_keys`,
+`devices`) have **no exercise other than the integration tests**, so `cargo cov`
+alone reports them at 0 % and is not a meaningful figure. Compose does not publish
+the DB ports on the host — run throwaway containers (recipe in `README.md`). The
+CI `coverage` job provides Postgres/Redis as services and runs `cov-full`, so the
+published number is the real one; it is **non-blocking** (`continue-on-error`, no
+threshold). Only `src/main.rs` is excluded (composition root); the exclusion regex
+accepts `/` **and** `\` — a `/`-only pattern filters nothing on Windows.
 
 ## 7. When you change X
 

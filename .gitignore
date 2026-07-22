@@ -1,4 +1,6 @@
 /target
+# Rapport de couverture exporté (cargo cov-lcov)
+lcov.info
 **/*.rs.bk
 .env
 node_modules/

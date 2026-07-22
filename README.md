@@ -61,6 +61,35 @@ cargo test        # tests d'intégration via build_app + oneshot (Postgres requi
 cargo deny check
 ```
 
+### Couverture de tests
+
+```bash
+rustup component add llvm-tools-preview && cargo install cargo-llvm-cov  # une fois
+cargo cov         # unitaires seuls (~26 %) — machine nue, sans base
+cargo cov-full    # + tests d'intégration : nécessite Postgres + Redis
+cargo cov-html    # rapport navigable : target/llvm-cov/html/index.html
+```
+
+⚠️ `cargo cov` seul **sous-estime largement** la couverture : les tests
+d'intégration sont `#[ignore]` (ils exigent Postgres + Redis), et les modules DB
+— `accounts`, `deltas`, `sessions`, `snapshots`, `vault_keys`, `devices` —
+n'ont pas d'autre exercice. Le chiffre qui compte est celui de `cargo cov-full` :
+**90,6 % de lignes**.
+
+Les ports de la stack Compose ne sont pas publiés sur l'hôte ; pour lancer
+`cov-full` en local, exposer une base jetable puis pointer dessus :
+
+```bash
+docker run -d --rm --name rg-cov-pg -e POSTGRES_USER=realmguard -e POSTGRES_PASSWORD=realmguard -e POSTGRES_DB=realmguard -p 55432:5432 postgres:16-alpine
+docker run -d --rm --name rg-cov-redis -p 56379:6379 redis:7-alpine
+DATABASE_URL="postgres://realmguard:realmguard@localhost:55432/realmguard?sslmode=disable" REDIS_URL="redis://localhost:56379" cargo cov-full
+docker stop rg-cov-pg rg-cov-redis
+```
+
+Les tests appliquent eux-mêmes les migrations. Seul `src/main.rs` est exclu du
+rapport (racine de composition). La CI publie le résumé à chaque PR — avec les
+services Postgres/Redis, donc le chiffre réel — **sans jamais bloquer**.
+
 ## Sécurité & déploiement
 
 - **TLS obligatoire en production** (le token Bearer transite sinon en clair) —
