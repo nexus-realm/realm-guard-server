@@ -131,6 +131,79 @@ jobs:
         with:
           manifest-path: realm-guard-server/Cargo.toml
 
+  # Rapport de couverture — **informatif, jamais bloquant** : aucun seuil, et
+  # `continue-on-error` pour qu'une panne d'outillage ne ferme pas une PR.
+  #
+  # Contrairement au job `quality` (qui n'exécute que les tests unitaires), on
+  # monte Postgres + Redis et on lève `--include-ignored` : sans ça les modules
+  # DB (accounts, deltas, sessions, snapshots, vault_keys) restent à 0 % et le
+  # chiffre publié n'aurait aucun sens. Les tests appliquent eux-mêmes les
+  # migrations.
+  coverage:
+    needs: check-branches
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: realmguard
+          POSTGRES_PASSWORD: realmguard
+          POSTGRES_DB: realmguard
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U realmguard"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout serveur
+        uses: actions/checkout@v4
+        with:
+          path: realm-guard-server
+      - name: Checkout cœur (sibling, deploy key lecture)
+        uses: actions/checkout@v4
+        with:
+          repository: nexus-realm/realm-guard-core
+          ref: ${{ github.base_ref || github.ref_name }}
+          ssh-key: ${{ secrets.CORE_REPO_DEPLOY_KEY }}
+          path: realm-guard-core
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: realm-guard-server
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Couverture (tests d'intégration compris)
+        working-directory: realm-guard-server
+        env:
+          DATABASE_URL: postgres://realmguard:realmguard@localhost:5432/realmguard?sslmode=disable
+          REDIS_URL: redis://localhost:6379
+        run: cargo cov-full | tee coverage.txt
+      - name: Résumé
+        if: always()
+        working-directory: realm-guard-server
+        run: |
+          {
+            echo '## Couverture (serveur, intégration comprise)'
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   docker-build:
     needs: check-branches
     if: github.event.action != 'edited'
