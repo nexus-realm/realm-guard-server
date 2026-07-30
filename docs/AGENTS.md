@@ -59,7 +59,11 @@
 ## 5. Config (env)
 
 `DATABASE_URL`, `REDIS_URL`, `RG_OPAQUE_SETUP_FILE`|`RG_OPAQUE_SETUP` (required),
-`RG_METRICS_TOKEN` (optional — Bearer-protects `/metrics`).
+`RG_METRICS_TOKEN` (optional — Bearer-protects `/metrics`), `SENTRY_DSN`
+(optional — enables Sentry). Metrics, alerting and the Grafana roadmap:
+**`OBSERVABILITY.md`**. `http_request_duration_seconds` is a real histogram
+(explicit buckets) — new histograms need their own buckets or fall back to a
+summary.
 
 ## 6. Dev, gate & deploy
 
