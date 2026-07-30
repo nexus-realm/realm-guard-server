@@ -1,5 +1,18 @@
 global:
   scrape_interval: 15s
+  # Sans ce réglage, l'évaluation des règles tomberait au défaut (1 min), rendant
+  # le `for:` des alertes grossier (une alerte `for: 1m` mettrait jusqu'à ~2 min).
+  evaluation_interval: 15s
+
+# Règles d'alerte (P3 — cf. rules/ et docs/OBSERVABILITY.md), évaluées en continu.
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# Où router les alertes qui passent *firing*.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
 
 scrape_configs:
   - job_name: "realm-guard-server"

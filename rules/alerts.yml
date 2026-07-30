@@ -1,0 +1,107 @@
+# Règles d'alerte Prometheus (P3 — cf. docs/OBSERVABILITY.md).
+#
+# Chargées via `rule_files` dans prometheus.yml, évaluées en continu, routées vers
+# Alertmanager. `for:` = durée pendant laquelle la condition doit tenir avant de
+# passer de *pending* à *firing* (anti-flapping). `severity` sert au routage/à
+# l'inhibition côté Alertmanager.
+#
+# Les noms de métriques référencés sont ceux réellement produits par l'app
+# (http_*), postgres-exporter (pg_*), redis-exporter (redis_*) et node-exporter
+# (node_*) — vérifiés en live.
+
+groups:
+  - name: disponibilite
+    rules:
+      # Toute cible que Prometheus ne scrape plus (app ou exporter).
+      - alert: CibleInjoignable
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Cible {{ $labels.job }} injoignable"
+          description: "Prometheus ne scrape plus {{ $labels.instance }} (job {{ $labels.job }}) depuis 2 min."
+
+      # Santé DIRECTE des dépendances (P2) : ne dépend plus de la déduction 5xx.
+      - alert: PostgresInjoignable
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Postgres injoignable"
+          description: "postgres-exporter rapporte pg_up=0 depuis 1 min."
+
+      - alert: RedisInjoignable
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis injoignable"
+          description: "redis-exporter rapporte redis_up=0 depuis 1 min."
+
+  - name: trafic
+    rules:
+      # Part de 5xx sur le trafic total. Pas de trafic ⇒ séries vides ⇒ pas
+      # d'alerte (aucune division par zéro).
+      - alert: TauxErreurs5xxEleve
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Taux d'erreurs 5xx > 5%"
+          description: "{{ $value | humanizePercentage }} des requêtes renvoient 5xx sur 5 min."
+
+      # p95 de latence, exploitable grâce aux buckets (P1).
+      - alert: LatenceP95Elevee
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latence p95 > 1s"
+          description: "p95 = {{ $value | humanizeDuration }} sur 5 min."
+
+  - name: ressources
+    rules:
+      - alert: ConnexionsPostgresElevees
+        expr: sum(pg_stat_activity_count) / on() pg_settings_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Connexions Postgres > 80% du plafond"
+          description: "{{ $value | humanizePercentage }} des connexions max utilisées."
+
+      # Garde `> 0` : sans `maxmemory`, redis_memory_max_bytes vaut 0 → sans ce
+      # garde, la division ferait +Inf et déclencherait à tort.
+      - alert: MemoireRedisElevee
+        expr: |
+          redis_memory_max_bytes > 0
+            and redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mémoire Redis > 90% de maxmemory"
+          description: "{{ $value | humanizePercentage }} de maxmemory utilisée."
+
+      # `mountpoint="/"` vise le root d'un hôte Linux de PROD. Sur Docker Desktop,
+      # node-exporter n'expose pas `/` (VM WSL2) → cette règle ne matche rien en
+      # local, ce qui est attendu.
+      - alert: EspaceDisqueFaible
+        expr: |
+          node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}
+            / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} < 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Espace disque hôte < 10%"
+          description: "{{ $value | humanizePercentage }} d'espace libre sur /."

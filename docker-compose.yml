@@ -64,10 +64,23 @@ services:
       - redis-exporter
       - node-exporter
       - cadvisor
+      - alertmanager
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./rules:/etc/prometheus/rules:ro # règles d'alerte (P3)
     ports:
       - "9090:9090"
+    restart: unless-stopped
+
+  # Routage des alertes (P3 — cf. docs/OBSERVABILITY.md). Reçoit les alertes
+  # *firing* de Prometheus, les regroupe/déduplique, et les route. Receiver de
+  # démo par défaut (aucune notification) — brancher un vrai canal en prod.
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
     restart: unless-stopped
 
   # ── Exporters de métriques infra (P2 — cf. docs/OBSERVABILITY.md) ──────────

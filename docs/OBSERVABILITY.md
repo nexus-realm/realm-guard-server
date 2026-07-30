@@ -158,6 +158,38 @@ plus une montée des 5xx.
 > `redis_up=1`, `redis_memory_used_bytes` peuplé, node-exporter (160 séries CPU),
 > et cAdvisor voyant les 7 conteneurs (`container_*` par `name`).
 
+### Le pipeline : règles → Alertmanager (P3)
+
+Les requêtes ci-dessus sont matérialisées en **règles d'alerte** dans
+`rules/alerts.yml` (chargées par `rule_files` dans `prometheus.yml`, évaluées
+toutes les 15 s). Une règle passe *pending* dès que sa condition est vraie, puis
+*firing* après sa durée `for:` (anti-flapping) ; Prometheus pousse alors l'alerte
+vers **Alertmanager** (service `alertmanager`, `:9093`), qui la regroupe,
+déduplique et route vers un *receiver*.
+
+Règles livrées (`severity` `critical`/`warning`) :
+
+| Alerte | Condition (résumé) | `for` |
+|---|---|---|
+| `CibleInjoignable` | `up == 0` (app ou exporter) | 2m |
+| `PostgresInjoignable` / `RedisInjoignable` | `pg_up == 0` / `redis_up == 0` | 1m |
+| `TauxErreurs5xxEleve` | part de 5xx > 5 % | 5m |
+| `LatenceP95Elevee` | p95 > 1 s (via buckets P1) | 10m |
+| `ConnexionsPostgresElevees` | connexions PG > 80 % du plafond | 5m |
+| `MemoireRedisElevee` | Redis > 90 % de `maxmemory` (gardé `> 0`) | 5m |
+| `EspaceDisqueFaible` | disque hôte `/` < 10 % | 5m |
+
+**Notifications.** Le receiver par défaut (`alertmanager.yml`) **ne notifie nulle
+part** : le pipeline est fonctionnel, les alertes sont visibles dans l'UI/API
+Alertmanager, mais brancher un vrai canal (email / Slack) reste une config à
+poser en prod — exemples commentés dans `alertmanager.yml`. Une règle
+d'**inhibition** évite le bruit : une panne `critical` masque les `warning`
+corrélés du même `job`.
+
+> Vérifié en live de bout en bout : 8 règles chargées (`health=ok`), Prometheus
+> relié à Alertmanager, Redis arrêté → `redis_up=0` → `RedisInjoignable` *firing*
+> → reçue par Alertmanager (receiver `defaut`) ; Redis relancé → alerte résolue.
+
 ---
 
 ## 5. Erreurs (Sentry)
@@ -189,10 +221,10 @@ base d'alerting complète, dans l'ordre de priorité :
   PG, mémoire Redis) et la supervision **directe** des dépendances (`pg_up`,
   `redis_up`). Reste de niveau prod : rôle `pg_monitor` dédié, épinglage de
   l'image Prometheus.
-- **P3 — pipeline d'alerte.** Soit **Alertmanager** (`rule_files` + bloc
-  `alerting` dans `prometheus.yml`), soit **alerting natif Grafana** (règles
-  gérées par Grafana, un composant de moins). Les deux se valent ; Grafana-managed
-  est plus simple pour démarrer.
+- **P3 — pipeline d'alerte.** ✅ **Fait** (§4, *Le pipeline*) : **Alertmanager**
+  (choix Prometheus-natif) + `rules/alerts.yml` (`rule_files`) + bloc `alerting`
+  dans `prometheus.yml`. Reste de niveau prod : brancher un *receiver* réel
+  (email/Slack) — le pipeline est en place, seule la destination manque.
 - **P4 — métriques métier.** Émettre des compteurs/jauges pour la sync
   (`deltas_pushed_total`, `snapshots_created_total`, jauge `ws_connections`),
   l'auth, les hits de rate-limit. Active l'alerting produit / anti-abus.
@@ -211,12 +243,33 @@ applicatif** (à l'exception de P4, qui instrumente le code).
 ### Voir les métriques via la stack Compose
 
 ```bash
-docker compose up -d              # app + pg + redis + caddy + prometheus + exporters
+docker compose up -d              # app + pg + redis + caddy + prometheus + exporters + alertmanager
 curl -s localhost:8080/metrics    # métriques app, via Caddy
-# Prometheus : http://localhost:9090
+# Prometheus  : http://localhost:9090  (onglet Alerts pour l'état des règles)
+# Alertmanager: http://localhost:9093
 # Cibles scrapées (app + 4 exporters, doivent être UP) :
 curl -s 'http://localhost:9090/api/v1/targets?state=active' \
   | python -c "import sys,json;[print(t['labels']['job'], t['health']) for t in json.load(sys.stdin)['data']['activeTargets']]"
+```
+
+### Déclencher une alerte (vérifier le pipeline P3)
+
+```bash
+docker compose stop redis         # redis_up passe à 0
+# ~1 min plus tard (for: 1m), RedisInjoignable fire et arrive dans Alertmanager :
+curl -s 'http://localhost:9093/api/v2/alerts' \
+  | python -c "import sys,json;[print(a['labels']['alertname'], a['status']['state']) for a in json.load(sys.stdin)]"
+docker compose start redis        # l'alerte se résout au prochain scrape
+```
+
+Valider règles et config d'alerte hors ligne (sur Git Bash, préfixer
+`MSYS_NO_PATHCONV=1` pour les chemins internes au conteneur) :
+
+```bash
+docker run --rm --entrypoint promtool -v "$PWD/rules:/rules:ro" \
+  prom/prometheus:latest check rules /rules/alerts.yml
+docker run --rm --entrypoint amtool -v "$PWD/alertmanager.yml:/am.yml:ro" \
+  prom/alertmanager:v0.27.0 check-config /am.yml
 ```
 
 ### Vérifier `/metrics` sans la stack (app native)
@@ -260,6 +313,9 @@ curl -s 'http://localhost:9090/api/v1/query' \
 
 - Modèle de menace et exigences de déploiement : [`SECURITY.md`](SECURITY.md).
 - Code : `src/observability.rs` (métriques), `src/main.rs` (Sentry, tracing),
-  `src/health.rs` (`/healthz`, `/readyz`), `prometheus.yml`, `docker-compose.yml`.
+  `src/health.rs` (`/healthz`, `/readyz`).
+- Config observabilité : `prometheus.yml` (scrape + `rule_files` + `alerting`),
+  `rules/alerts.yml` (règles P3), `alertmanager.yml` (routage), `docker-compose.yml`
+  (app + exporters + prometheus + alertmanager).
 - Variables d'env : `RG_METRICS_TOKEN` (protège `/metrics`), `SENTRY_DSN`
   (active Sentry), `RUST_LOG` (niveau de trace).
