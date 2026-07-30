@@ -37,6 +37,23 @@ routes.
   `Authorization: Bearer <token>` (401 sinon). **Non posé en compose** → l'endpoint
   est ouvert en dev (cf. §5, durcissement prod).
 
+### Métriques métier (P4)
+
+Émises aux points d'événement (handlers sync / auth / ws) via des *recorders*
+centralisés dans `src/observability.rs`. **Zero-knowledge** : préfixe `rg_`, et
+**aucun label sensible** — pas de compte, username, IP ni `syncId`. Seul
+`rg_auth_logins_total` porte un label borné (`outcome`).
+
+| Métrique | Type | Labels | Émise quand |
+|---|---|---|---|
+| `rg_sync_deltas_pushed_total` | counter | — | delta poussé (`POST /sync/deltas`) |
+| `rg_sync_deltas_pulled_total` | counter | — | deltas servis à un tirage |
+| `rg_sync_snapshots_created_total` | counter | — | snapshot publié + log compacté |
+| `rg_auth_registrations_total` | counter | — | inscription finalisée |
+| `rg_auth_logins_total` | counter | `outcome` (`success`/`failure`) | login finalisé |
+| `rg_auth_lockouts_total` | counter | — | refus pour compte verrouillé (anti-abus) |
+| `rg_ws_connections` | **gauge** | — | connexions WebSocket actives (garde RAII) |
+
 ---
 
 ## 2. Format des histogrammes : **buckets**, pas summary
@@ -190,6 +207,20 @@ corrélés du même `job`.
 > relié à Alertmanager, Redis arrêté → `redis_up=0` → `RedisInjoignable` *firing*
 > → reçue par Alertmanager (receiver `defaut`) ; Redis relancé → alerte résolue.
 
+### Alertes métier & anti-abus (via les métriques P4)
+
+Les métriques `rg_*` (§1) ouvrent un axe **produit / anti-abus** que les seules
+métriques HTTP ne permettaient pas. Ces requêtes ne sont **pas** dans
+`rules/alerts.yml` (jeu volontairement centré dispo/ressources) — ce sont des
+candidates à y ajouter selon les seuils souhaités :
+
+| Objectif | PromQL |
+|---|---|
+| Rafale de verrouillages (attaque distribuée par compte) | `sum(rate(rg_auth_lockouts_total[5m])) > 1` |
+| Taux d'échec de login anormal | `sum(rate(rg_auth_logins_total{outcome="failure"}[5m])) / sum(rate(rg_auth_logins_total[5m])) > 0.5` |
+| Fuite de connexions WebSocket (jauge qui ne redescend pas) | `rg_ws_connections > 500` |
+| Sync au point mort malgré du trafic (aucun delta poussé) | `sum(rate(rg_sync_deltas_pushed_total[15m])) == 0` |
+
 ---
 
 ## 5. Erreurs (Sentry)
@@ -225,9 +256,10 @@ base d'alerting complète, dans l'ordre de priorité :
   (choix Prometheus-natif) + `rules/alerts.yml` (`rule_files`) + bloc `alerting`
   dans `prometheus.yml`. Reste de niveau prod : brancher un *receiver* réel
   (email/Slack) — le pipeline est en place, seule la destination manque.
-- **P4 — métriques métier.** Émettre des compteurs/jauges pour la sync
-  (`deltas_pushed_total`, `snapshots_created_total`, jauge `ws_connections`),
-  l'auth, les hits de rate-limit. Active l'alerting produit / anti-abus.
+- **P4 — métriques métier.** ✅ **Fait** (§1, *Métriques métier*) : compteurs sync
+  (`rg_sync_*`), auth (`rg_auth_*`, dont `rg_auth_lockouts_total` anti-abus) et
+  jauge `rg_ws_connections`, tous zero-knowledge. Câblage vérifié de bout en bout
+  par le test d'intégration. Ouvre l'alerting produit/anti-abus (exemples §4).
 - **P5 — durcissement.** Poser `RG_METRICS_TOKEN` en prod (ou bloquer `/metrics`
   au niveau Caddy), épingler l'image Prometheus, fixer
   `--storage.tsdb.retention.time`, scraper Prometheus lui-même, et provisionner
