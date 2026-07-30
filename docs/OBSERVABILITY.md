@@ -30,8 +30,9 @@ routes.
 
 - **`path` = motif de route** (`MatchedPath`, ex. `/sync/deltas`), jamais l'URL
   concrète — la cardinalité des séries reste bornée.
-- Pas de métrique `process_*` : l'exporter Rust (`metrics-exporter-prometheus`)
-  n'émet **pas** de CPU/RAM/FD du process. Pour ça → exporters dédiés (§6, P2).
+- L'app **n'émet pas** de `process_*` (l'exporter Rust ne mesure pas son propre
+  CPU/RAM/FD). Les ressources sont couvertes séparément par les **exporters
+  infra** (§3) : cAdvisor voit la conso du conteneur `app`, node-exporter l'hôte.
 - Protection optionnelle : si `RG_METRICS_TOKEN` est défini, `/metrics` exige
   `Authorization: Bearer <token>` (401 sinon). **Non posé en compose** → l'endpoint
   est ouvert en dev (cf. §5, durcissement prod).
@@ -70,24 +71,30 @@ verrouille le format sur la config de prod.
 
 ## 3. Scrape & topologie
 
-`prometheus.yml` :
+Prometheus (`scrape_interval: 15s`) scrape cinq cibles, toutes résolues par nom
+de service sur le réseau Compose (`prometheus.yml`) :
 
-```yaml
-global:
-  scrape_interval: 15s
-scrape_configs:
-  - job_name: "realm-guard-server"
-    metrics_path: /metrics
-    static_configs:
-      - targets: ["app:8080"]
-```
+| Job | Cible | Fournit |
+|---|---|---|
+| `realm-guard-server` | `app:8080` | métriques applicatives (§1) |
+| `postgres` | `postgres-exporter:9187` | connexions, taille DB, `pg_up`, stats requêtes |
+| `redis` | `redis-exporter:9121` | mémoire, clients, `redis_up`, hits/miss |
+| `node` | `node-exporter:9100` | CPU / RAM / **disque hôte** |
+| `cadvisor` | `cadvisor:8080` | ressources **par conteneur** |
 
+- Les exporters (P2) sont des services du `docker-compose.yml`, sans port publié
+  sur l'hôte. `postgres-exporter` se connecte avec le compte applicatif **en dev
+  seulement** ; en prod → rôle `pg_monitor` dédié via secret monté (cf. §5).
 - Prometheus scrape l'app **directement** sur le réseau interne (`app:8080`), pas
   via Caddy.
 - Caddy (`reverse_proxy app:8080`) proxie **tout**, `/metrics` compris → en prod,
   sans `RG_METRICS_TOKEN` ni règle de blocage au proxy, la volumétrie serait
   publique.
-- L'image `prom/prometheus:latest` n'est **pas épinglée** (à figer en prod).
+- **Docker Desktop (Windows)** : node-exporter mesure la VM Linux sous-jacente
+  (pas Windows), et cAdvisor n'a qu'un support partiel du runtime — les deux
+  fonctionnent en prod sur hôte Linux.
+- L'image `prom/prometheus:latest` n'est **pas épinglée** (à figer en prod) ; les
+  exporters, eux, **le sont**.
 - Aucun flag `--storage.tsdb.retention*` → **rétention par défaut (15 j)**.
 - Prometheus ne se scrape **pas** lui-même (pas de méta-supervision).
 
@@ -123,11 +130,33 @@ sum(rate(http_request_duration_seconds_bucket{path="/readyz",le="0.1"}[5m]))
 > `up == 1`, type `histogram` reconnu, `histogram_quantile(0.95)` ≈ 4,75 ms sur
 > `/readyz`, ratio SLO = 100 %.
 
-**Note sur la santé des dépendances.** `/readyz` renvoie 503 si Postgres/Redis
-est injoignable, mais **n'est pas scrapé** — il n'existe donc pas de métrique
-« DB up ». Aujourd'hui, une panne DB se déduit **indirectement** (montée des 5xx,
-ou `up == 0` si le process tombe). Une supervision directe des dépendances
-demande les exporters de la §6 (P2).
+### Alertes ressources & dépendances (via les exporters, P2)
+
+Depuis l'ajout des exporters (§3), les ressources et la santé **directe** des
+dépendances sont requêtables. Exemples :
+
+| Objectif | PromQL |
+|---|---|
+| Postgres injoignable | `pg_up == 0` |
+| Redis injoignable | `redis_up == 0` |
+| Connexions PG proches du plafond | `sum(pg_stat_activity_count) / on() pg_settings_max_connections > 0.8` |
+| Mémoire Redis élevée | `redis_memory_used_bytes / redis_memory_max_bytes > 0.9` (si `maxmemory` posé) |
+| Disque hôte presque plein | `node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.1` |
+| RAM d'un conteneur | `container_memory_usage_bytes{name=~"realm-guard-server-.*"}` |
+
+> Les noms de métriques et de labels dépendent de la version et de l'hôte ;
+> vérifier sur `http://localhost:9090` (onglet *Graph*, autocomplétion). En
+> particulier, `mountpoint="/"` vise le **root d'un hôte Linux de prod** : sur
+> Docker Desktop, node-exporter mesure la VM WSL2 et n'expose pas `/` mais des
+> chemins `…/docker-desktop-disk`.
+
+`pg_up == 0` / `redis_up == 0` remplacent la déduction indirecte : `/readyz`
+renvoie toujours 503 côté app si une dépendance tombe, mais l'alerte n'attend
+plus une montée des 5xx.
+
+> Vérifié en live (stack Compose) : les 4 cibles exporters `up`, `pg_up=1`,
+> `redis_up=1`, `redis_memory_used_bytes` peuplé, node-exporter (160 séries CPU),
+> et cAdvisor voyant les 7 conteneurs (`container_*` par `name`).
 
 ---
 
@@ -154,10 +183,12 @@ base d'alerting complète, dans l'ordre de priorité :
 
 - **P1 — buckets de latence.** ✅ **Fait** (§2). Débloque percentiles, agrégation
   et SLO.
-- **P2 — visibilité infra.** Ajouter `postgres_exporter`, `redis_exporter`, et
-  `cadvisor`/`node_exporter` (services compose + `scrape_configs`). Sans eux,
-  **aucune** alerte ressource (CPU, RAM, disque, connexions PG, mémoire Redis) ni
-  supervision directe des dépendances.
+- **P2 — visibilité infra.** ✅ **Fait** (§3) : `postgres-exporter`,
+  `redis-exporter`, `node-exporter` et `cadvisor` en services compose +
+  `scrape_configs`. Débloque les alertes ressource (CPU, RAM, disque, connexions
+  PG, mémoire Redis) et la supervision **directe** des dépendances (`pg_up`,
+  `redis_up`). Reste de niveau prod : rôle `pg_monitor` dédié, épinglage de
+  l'image Prometheus.
 - **P3 — pipeline d'alerte.** Soit **Alertmanager** (`rule_files` + bloc
   `alerting` dans `prometheus.yml`), soit **alerting natif Grafana** (règles
   gérées par Grafana, un composant de moins). Les deux se valent ; Grafana-managed
@@ -180,9 +211,12 @@ applicatif** (à l'exception de P4, qui instrumente le code).
 ### Voir les métriques via la stack Compose
 
 ```bash
-docker compose up -d              # app + postgres + redis + caddy + prometheus
-curl -s localhost:8080/metrics    # via Caddy
+docker compose up -d              # app + pg + redis + caddy + prometheus + exporters
+curl -s localhost:8080/metrics    # métriques app, via Caddy
 # Prometheus : http://localhost:9090
+# Cibles scrapées (app + 4 exporters, doivent être UP) :
+curl -s 'http://localhost:9090/api/v1/targets?state=active' \
+  | python -c "import sys,json;[print(t['labels']['job'], t['health']) for t in json.load(sys.stdin)['data']['activeTargets']]"
 ```
 
 ### Vérifier `/metrics` sans la stack (app native)

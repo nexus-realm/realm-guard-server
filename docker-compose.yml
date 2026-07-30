@@ -60,10 +60,70 @@ services:
     image: prom/prometheus:latest # à épingler en production
     depends_on:
       - app
+      - postgres-exporter
+      - redis-exporter
+      - node-exporter
+      - cadvisor
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
+    restart: unless-stopped
+
+  # ── Exporters de métriques infra (P2 — cf. docs/OBSERVABILITY.md) ──────────
+  # Chacun expose /metrics sur le réseau interne ; Prometheus les scrape (cf.
+  # prometheus.yml). Aucun port publié sur l'hôte (hygiène).
+
+  # Postgres : connexions, taille de base, up/down, statistiques de requêtes.
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    environment:
+      # ⚠️ DEV : réutilise le compte applicatif. En prod, un rôle de supervision
+      # dédié (droits `pg_monitor`) fourni via secret monté, jamais ce compte.
+      DATA_SOURCE_NAME: "postgresql://realmguard:realmguard@postgres:5432/realmguard?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Redis : mémoire utilisée, clients connectés, up/down, hits/miss.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Hôte : CPU / RAM / disque. Sur Docker Desktop, mesure la VM Linux
+  # sous-jacente (pas Windows) ; en prod sur hôte Linux, c'est bien la machine.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    restart: unless-stopped
+
+  # Par conteneur : CPU / RAM / réseau / FS de chaque service. Accès privilégié
+  # au runtime requis ; sur Docker Desktop Windows, le support est partiel.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
     restart: unless-stopped
 
 volumes:

@@ -6,3 +6,21 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["app:8080"]
+
+  # Exporters infra (P2 — cf. docs/OBSERVABILITY.md). Ports par défaut de chaque
+  # exporter ; résolus par nom de service sur le réseau Compose.
+  - job_name: "postgres"
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: "redis"
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  - job_name: "node"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  - job_name: "cadvisor"
+    static_configs:
+      - targets: ["cadvisor:8080"]
