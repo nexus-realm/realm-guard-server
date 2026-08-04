@@ -57,7 +57,7 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:latest # à épingler en production
+    image: prom/prometheus:v2.53.2 # LTS épinglée (P5) — plus de :latest
     depends_on:
       - app
       - postgres-exporter
@@ -65,9 +65,17 @@ services:
       - node-exporter
       - cadvisor
       - alertmanager
+    # `command` explicite (P5) : rétention TSDB bornée + recharge à chaud. Override
+    # le défaut de l'image, d'où le rappel de `--config.file`/`--storage.tsdb.path`.
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle" # POST /-/reload sans redémarrer le conteneur
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./rules:/etc/prometheus/rules:ro # règles d'alerte (P3)
+      - prom_data:/prometheus # TSDB persistante (sinon rétention sans effet)
     ports:
       - "9090:9090"
     restart: unless-stopped
@@ -139,7 +147,35 @@ services:
       - /dev/disk/:/dev/disk:ro
     restart: unless-stopped
 
+  # Visualisation (P5 — cf. docs/OBSERVABILITY.md). Datasource + dashboards
+  # provisionnés **as-code** depuis grafana/provisioning et grafana/dashboards :
+  # aucun clic, tout est versionné et reproductible.
+  grafana:
+    image: grafana/grafana:11.2.2
+    depends_on:
+      - prometheus
+    environment:
+      # ⚠️ DEV : accès anonyme en lecture (voir les dashboards sans login). En prod,
+      # désactiver l'anonyme et poser un mot de passe admin fort via secret monté.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_SECURITY_ADMIN_PASSWORD: "admin" # DEV ONLY
+      GF_USERS_DEFAULT_THEME: "dark"
+    volumes:
+      # Monter les sous-dossiers ciblés (pas le parent) : sinon on masque les
+      # dossiers de provisioning par défaut de l'image (plugins/, alerting/…) et
+      # Grafana journalise des erreurs « répertoire absent » bénignes.
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
 volumes:
   pgdata:
   caddy_data:
   caddy_config:
+  prom_data:
+  grafana_data:

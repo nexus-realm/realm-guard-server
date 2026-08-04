@@ -15,6 +15,11 @@ alerting:
         - targets: ["alertmanager:9093"]
 
 scrape_configs:
+  # Méta-supervision : Prometheus se scrape lui-même (P5).
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
   - job_name: "realm-guard-server"
     metrics_path: /metrics
     static_configs:

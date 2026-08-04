@@ -35,7 +35,7 @@ routes.
   infra** (§3) : cAdvisor voit la conso du conteneur `app`, node-exporter l'hôte.
 - Protection optionnelle : si `RG_METRICS_TOKEN` est défini, `/metrics` exige
   `Authorization: Bearer <token>` (401 sinon). **Non posé en compose** → l'endpoint
-  est ouvert en dev (cf. §5, durcissement prod).
+  est ouvert en dev (cf. §6, *Durcissement production*).
 
 ### Métriques métier (P4)
 
@@ -88,11 +88,12 @@ verrouille le format sur la config de prod.
 
 ## 3. Scrape & topologie
 
-Prometheus (`scrape_interval: 15s`) scrape cinq cibles, toutes résolues par nom
-de service sur le réseau Compose (`prometheus.yml`) :
+Prometheus (`scrape_interval` + `evaluation_interval` = 15s) scrape six cibles,
+toutes résolues par nom de service sur le réseau Compose (`prometheus.yml`) :
 
 | Job | Cible | Fournit |
 |---|---|---|
+| `prometheus` | `localhost:9090` | méta-supervision (P5) |
 | `realm-guard-server` | `app:8080` | métriques applicatives (§1) |
 | `postgres` | `postgres-exporter:9187` | connexions, taille DB, `pg_up`, stats requêtes |
 | `redis` | `redis-exporter:9121` | mémoire, clients, `redis_up`, hits/miss |
@@ -101,7 +102,7 @@ de service sur le réseau Compose (`prometheus.yml`) :
 
 - Les exporters (P2) sont des services du `docker-compose.yml`, sans port publié
   sur l'hôte. `postgres-exporter` se connecte avec le compte applicatif **en dev
-  seulement** ; en prod → rôle `pg_monitor` dédié via secret monté (cf. §5).
+  seulement** ; en prod → rôle `pg_monitor` dédié via secret monté (cf. §6).
 - Prometheus scrape l'app **directement** sur le réseau interne (`app:8080`), pas
   via Caddy.
 - Caddy (`reverse_proxy app:8080`) proxie **tout**, `/metrics` compris → en prod,
@@ -110,10 +111,35 @@ de service sur le réseau Compose (`prometheus.yml`) :
 - **Docker Desktop (Windows)** : node-exporter mesure la VM Linux sous-jacente
   (pas Windows), et cAdvisor n'a qu'un support partiel du runtime — les deux
   fonctionnent en prod sur hôte Linux.
-- L'image `prom/prometheus:latest` n'est **pas épinglée** (à figer en prod) ; les
-  exporters, eux, **le sont**.
-- Aucun flag `--storage.tsdb.retention*` → **rétention par défaut (15 j)**.
-- Prometheus ne se scrape **pas** lui-même (pas de méta-supervision).
+- **Images épinglées** (P5) : Prometheus `v2.53.2` (LTS), et les exporters/Grafana
+  à une version fixe — plus de `:latest`, builds reproductibles.
+- **Rétention TSDB = 30 j** (`--storage.tsdb.retention.time`, P5), sur un volume
+  nommé `prom_data` ; recharge à chaud via `POST /-/reload` (`--web.enable-lifecycle`).
+- Prometheus **se scrape lui-même** (job `prometheus`, P5).
+
+### Grafana (P5)
+
+Service `grafana` (`:3000`), **entièrement provisionné as-code** — aucun clic,
+tout est versionné :
+
+- `grafana/provisioning/datasources/prometheus.yml` — datasource Prometheus
+  (`uid: prometheus`, référencé par le dashboard → **stable**).
+- `grafana/provisioning/dashboards/dashboards.yml` — provider qui charge tous les
+  `.json` de `grafana/dashboards/`.
+- `grafana/dashboards/realm-guard-overview.json` — dashboard *Overview* (11
+  panneaux) : santé dépendances (`pg_up`/`redis_up`), **RED** (requêtes par statut,
+  taux 5xx, latence p50/p95/p99 via les buckets P1), **sync** (deltas poussés/tirés,
+  snapshots), **auth** (logins par issue, verrouillages), connexions PG et WS.
+
+Accès dev : `http://localhost:3000`, **anonyme en lecture** (pas de login). Les
+sous-dossiers de provisioning sont montés **individuellement** (pas le parent),
+sinon Grafana journalise des erreurs bénignes « répertoire absent » pour les
+dossiers par défaut masqués (`plugins/`, `alerting/`).
+
+> Vérifié en live : Prometheus `retention=30d`, `up{job="prometheus"}=1`,
+> `POST /-/reload` → 200 ; Grafana santé `ok`, datasource « Successfully queried
+> the Prometheus API », dashboard `rg-overview` (11 panneaux) provisionné, logs de
+> provisioning propres.
 
 ---
 
@@ -260,13 +286,29 @@ base d'alerting complète, dans l'ordre de priorité :
   (`rg_sync_*`), auth (`rg_auth_*`, dont `rg_auth_lockouts_total` anti-abus) et
   jauge `rg_ws_connections`, tous zero-knowledge. Câblage vérifié de bout en bout
   par le test d'intégration. Ouvre l'alerting produit/anti-abus (exemples §4).
-- **P5 — durcissement.** Poser `RG_METRICS_TOKEN` en prod (ou bloquer `/metrics`
-  au niveau Caddy), épingler l'image Prometheus, fixer
-  `--storage.tsdb.retention.time`, scraper Prometheus lui-même, et provisionner
-  Grafana en *as-code* (`provisioning/datasources` + `provisioning/dashboards`).
+- **P5 — durcissement + Grafana.** ✅ **Fait** (§3, durcissement + *Grafana*) :
+  images épinglées, rétention 30 j, auto-scrape Prometheus, et **Grafana
+  provisionné as-code** (datasource + dashboard *Overview*). Reste de niveau prod :
+  voir la checklist *Durcissement production* ci-dessous.
 
 Chaque étape P2–P5 est de l'ajout d'infra/config **sans toucher au code
 applicatif** (à l'exception de P4, qui instrumente le code).
+
+### Durcissement production (à faire hors dev)
+
+Le `docker-compose.yml` est une stack **dev** volontairement ouverte sur le réseau
+interne. Avant un déploiement exposé :
+
+- **Protéger `/metrics`** : poser `RG_METRICS_TOKEN` sur l'app **et** l'envoyer
+  depuis Prometheus (`authorization: { credentials: <token> }` dans le
+  `scrape_config` de `realm-guard-server`), ou bloquer `/metrics` au niveau Caddy.
+- **Rôle Postgres dédié** : `postgres-exporter` doit utiliser un rôle `pg_monitor`
+  en lecture seule (pas le compte applicatif), fourni via secret monté.
+- **Grafana** : désactiver l'accès anonyme (`GF_AUTH_ANONYMOUS_ENABLED=false`) et
+  poser un `GF_SECURITY_ADMIN_PASSWORD` fort via secret.
+- **Alertmanager** : brancher un *receiver* réel (email/Slack, cf. §4).
+- **TLS** : terminer au reverse proxy (le token Bearer transite sinon en clair).
+- **Secrets** : ne pas réutiliser le `RG_OPAQUE_SETUP` de dev.
 
 ---
 
@@ -275,11 +317,12 @@ applicatif** (à l'exception de P4, qui instrumente le code).
 ### Voir les métriques via la stack Compose
 
 ```bash
-docker compose up -d              # app + pg + redis + caddy + prometheus + exporters + alertmanager
+docker compose up -d              # app + pg + redis + caddy + prometheus + exporters + alertmanager + grafana
 curl -s localhost:8080/metrics    # métriques app, via Caddy
 # Prometheus  : http://localhost:9090  (onglet Alerts pour l'état des règles)
 # Alertmanager: http://localhost:9093
-# Cibles scrapées (app + 4 exporters, doivent être UP) :
+# Grafana     : http://localhost:3000  (anonyme ; dashboard « Realm Guard — Overview »)
+# Cibles scrapées (self + app + 4 exporters, doivent être UP) :
 curl -s 'http://localhost:9090/api/v1/targets?state=active' \
   | python -c "import sys,json;[print(t['labels']['job'], t['health']) for t in json.load(sys.stdin)['data']['activeTargets']]"
 ```
@@ -347,7 +390,8 @@ curl -s 'http://localhost:9090/api/v1/query' \
 - Code : `src/observability.rs` (métriques), `src/main.rs` (Sentry, tracing),
   `src/health.rs` (`/healthz`, `/readyz`).
 - Config observabilité : `prometheus.yml` (scrape + `rule_files` + `alerting`),
-  `rules/alerts.yml` (règles P3), `alertmanager.yml` (routage), `docker-compose.yml`
-  (app + exporters + prometheus + alertmanager).
+  `rules/alerts.yml` (règles P3), `alertmanager.yml` (routage), `grafana/`
+  (datasource + dashboards provisionnés, P5), `docker-compose.yml` (app +
+  exporters + prometheus + alertmanager + grafana).
 - Variables d'env : `RG_METRICS_TOKEN` (protège `/metrics`), `SENTRY_DSN`
   (active Sentry), `RUST_LOG` (niveau de trace).
