@@ -4,3 +4,7 @@ lcov.info
 **/*.rs.bk
 .env
 node_modules/
+# Secrets d'alerte réels : seuls les .example et le README sont versionnés.
+/secrets/*
+!/secrets/*.example
+!/secrets/README.md

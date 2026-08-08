@@ -210,28 +210,45 @@ toutes les 15 s). Une règle passe *pending* dès que sa condition est vraie, pu
 vers **Alertmanager** (service `alertmanager`, `:9093`), qui la regroupe,
 déduplique et route vers un *receiver*.
 
-Règles livrées (`severity` `critical`/`warning`) :
+Règles livrées :
 
-| Alerte | Condition (résumé) | `for` |
-|---|---|---|
-| `CibleInjoignable` | `up == 0` (app ou exporter) | 2m |
-| `PostgresInjoignable` / `RedisInjoignable` | `pg_up == 0` / `redis_up == 0` | 1m |
-| `TauxErreurs5xxEleve` | part de 5xx > 5 % | 5m |
-| `LatenceP95Elevee` | p95 > 1 s (via buckets P1) | 10m |
-| `ConnexionsPostgresElevees` | connexions PG > 80 % du plafond | 5m |
-| `MemoireRedisElevee` | Redis > 90 % de `maxmemory` (gardé `> 0`) | 5m |
-| `EspaceDisqueFaible` | disque hôte `/` < 10 % | 5m |
+| Alerte | Condition (résumé) | `for` | `severity` |
+|---|---|---|---|
+| `CibleInjoignable` | `up == 0` (app ou exporter) | 2m | critical |
+| `PostgresInjoignable` / `RedisInjoignable` | `pg_up == 0` / `redis_up == 0` | 1m | critical |
+| `TauxErreurs5xxEleve` | part de 5xx > 5 % | 5m | warning |
+| `LatenceP95Elevee` | p95 > 1 s (via buckets P1) | 10m | warning |
+| `ConnexionsPostgresElevees` | connexions PG > 80 % du plafond | 5m | warning |
+| `MemoireRedisElevee` | Redis > 90 % de `maxmemory` (gardé `> 0`) | 5m | warning |
+| `EspaceDisqueFaible` | disque hôte `/` < 10 % | 5m | warning |
+| `Watchdog` | `vector(1)` — fire en permanence (dead-man's-switch) | — | none |
 
-**Notifications.** Le receiver par défaut (`alertmanager.yml`) **ne notifie nulle
-part** : le pipeline est fonctionnel, les alertes sont visibles dans l'UI/API
-Alertmanager, mais brancher un vrai canal (email / Slack) reste une config à
-poser en prod — exemples commentés dans `alertmanager.yml`. Une règle
-d'**inhibition** évite le bruit : une panne `critical` masque les `warning`
-corrélés du même `job`.
+**Notifications — Discord + Watchdog.** `route` (dans `alertmanager.yml`) :
 
-> Vérifié en live de bout en bout : 8 règles chargées (`health=ok`), Prometheus
-> relié à Alertmanager, Redis arrêté → `redis_up=0` → `RedisInjoignable` *firing*
-> → reçue par Alertmanager (receiver `defaut`) ; Redis relancé → alerte résolue.
+- **`critical`** (cible/pg/redis down) → **Discord**, regroupement réactif (`group_wait: 10s`) ;
+- **`warning`** (5xx, latence, seuils) → **Discord** aussi, cadence par défaut ;
+- **`Watchdog`** → receiver dédié `watchdog` (webhook vers un **heartbeat externe**),
+  **jamais** Discord — sinon spam toutes les minutes.
+
+L'**inhibition** évite le bruit (une panne `critical` masque les `warning` du même
+`job`) et le **throttling** (`repeat_interval: 4h`) borne les rappels.
+
+**Secrets.** Le webhook Discord et l'URL de heartbeat sont lus depuis des **fichiers
+montés** (`webhook_url_file` / `url_file`, cf. `secrets/README.md`), jamais en clair
+dans la config. Absents → Alertmanager démarre quand même, l'envoi échoue et est
+journalisé (dégradation gracieuse). Le `webhook_url_file` Discord impose
+**Alertmanager ≥ 0.28** (d'où le pin `v0.28.1`).
+
+**Dead-man's-switch.** `Watchdog` fire en continu ; un moniteur **externe**
+(healthchecks.io, Dead Man's Snitch) surveille ce battement. Si Prometheus,
+Alertmanager ou le serveur tombe, le ping s'arrête → le moniteur externe alerte.
+C'est ce qui « surveille le surveillant » (heartbeat optionnel : sans `heartbeat_url`,
+le Watchdog reste inerte mais ne casse rien).
+
+> Vérifié en live de bout en bout (Alertmanager v0.28.1, secrets pointés sur un
+> sink HTTP) : `RedisInjoignable`/`CibleInjoignable` livrées à Discord en **embed**
+> (`{embeds:[{title:"[FIRING] …", color:rouge}]}`) ; le `Watchdog` routé vers le
+> heartbeat (**pas** Discord) ; démarrage sain **sans** les fichiers secrets.
 
 ### Alertes métier & anti-abus (via les métriques P4)
 
@@ -279,9 +296,9 @@ base d'alerting complète, dans l'ordre de priorité :
   `redis_up`). Reste de niveau prod : rôle `pg_monitor` dédié, épinglage de
   l'image Prometheus.
 - **P3 — pipeline d'alerte.** ✅ **Fait** (§4, *Le pipeline*) : **Alertmanager**
-  (choix Prometheus-natif) + `rules/alerts.yml` (`rule_files`) + bloc `alerting`
-  dans `prometheus.yml`. Reste de niveau prod : brancher un *receiver* réel
-  (email/Slack) — le pipeline est en place, seule la destination manque.
+  (Prometheus-natif) + `rules/alerts.yml` + bloc `alerting`, **receiver Discord**
+  (secret fichier) + routage par sévérité + **Watchdog** (dead-man's-switch). Reste
+  à l'exploitant : déposer le webhook Discord et l'URL de heartbeat (`secrets/`).
 - **P4 — métriques métier.** ✅ **Fait** (§1, *Métriques métier*) : compteurs sync
   (`rg_sync_*`), auth (`rg_auth_*`, dont `rg_auth_lockouts_total` anti-abus) et
   jauge `rg_ws_connections`, tous zero-knowledge. Câblage vérifié de bout en bout
@@ -306,7 +323,9 @@ interne. Avant un déploiement exposé :
   en lecture seule (pas le compte applicatif), fourni via secret monté.
 - **Grafana** : désactiver l'accès anonyme (`GF_AUTH_ANONYMOUS_ENABLED=false`) et
   poser un `GF_SECURITY_ADMIN_PASSWORD` fort via secret.
-- **Alertmanager** : brancher un *receiver* réel (email/Slack, cf. §4).
+- **Alertmanager** : déposer les secrets réels (`secrets/discord_webhook`,
+  `secrets/heartbeat_url` — cf. `secrets/README.md`) ; brancher le heartbeat sur un
+  moniteur externe pour activer le Watchdog.
 - **TLS** : terminer au reverse proxy (le token Bearer transite sinon en clair).
 - **Secrets** : ne pas réutiliser le `RG_OPAQUE_SETUP` de dev.
 
@@ -327,11 +346,23 @@ curl -s 'http://localhost:9090/api/v1/targets?state=active' \
   | python -c "import sys,json;[print(t['labels']['job'], t['health']) for t in json.load(sys.stdin)['data']['activeTargets']]"
 ```
 
-### Déclencher une alerte (vérifier le pipeline P3)
+### Activer les notifications Discord
+
+```bash
+cp secrets/discord_webhook.example secrets/discord_webhook   # puis y coller le webhook
+# (optionnel) cp secrets/heartbeat_url.example secrets/heartbeat_url   # active le Watchdog
+docker compose up -d alertmanager                            # relit les secrets au vol
+```
+
+Sans ces fichiers, la stack démarre quand même — Alertmanager journalise juste
+l'échec d'envoi (cf. `secrets/README.md`).
+
+### Déclencher une alerte (vérifier le pipeline)
 
 ```bash
 docker compose stop redis         # redis_up passe à 0
-# ~1 min plus tard (for: 1m), RedisInjoignable fire et arrive dans Alertmanager :
+# ~1 min plus tard (for: 1m), RedisInjoignable fire, arrive dans Alertmanager
+# et — si le webhook est posé — est livrée à Discord en embed :
 curl -s 'http://localhost:9093/api/v2/alerts' \
   | python -c "import sys,json;[print(a['labels']['alertname'], a['status']['state']) for a in json.load(sys.stdin)]"
 docker compose start redis        # l'alerte se résout au prochain scrape
@@ -342,9 +373,9 @@ Valider règles et config d'alerte hors ligne (sur Git Bash, préfixer
 
 ```bash
 docker run --rm --entrypoint promtool -v "$PWD/rules:/rules:ro" \
-  prom/prometheus:latest check rules /rules/alerts.yml
+  prom/prometheus:v2.53.2 check rules /rules/alerts.yml
 docker run --rm --entrypoint amtool -v "$PWD/alertmanager.yml:/am.yml:ro" \
-  prom/alertmanager:v0.27.0 check-config /am.yml
+  prom/alertmanager:v0.28.1 check-config /am.yml
 ```
 
 ### Vérifier `/metrics` sans la stack (app native)
@@ -390,7 +421,8 @@ curl -s 'http://localhost:9090/api/v1/query' \
 - Code : `src/observability.rs` (métriques), `src/main.rs` (Sentry, tracing),
   `src/health.rs` (`/healthz`, `/readyz`).
 - Config observabilité : `prometheus.yml` (scrape + `rule_files` + `alerting`),
-  `rules/alerts.yml` (règles P3), `alertmanager.yml` (routage), `grafana/`
+  `rules/alerts.yml` (règles + Watchdog), `alertmanager.yml` (routage Discord +
+  Watchdog), `secrets/` (webhook Discord + heartbeat, hors-git), `grafana/`
   (datasource + dashboards provisionnés, P5), `docker-compose.yml` (app +
   exporters + prometheus + alertmanager + grafana).
 - Variables d'env : `RG_METRICS_TOKEN` (protège `/metrics`), `SENTRY_DSN`

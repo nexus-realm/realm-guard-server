@@ -155,7 +155,7 @@ jobs:
         run: |
           docker run --rm --entrypoint amtool \
             -v "$PWD/alertmanager.yml:/am.yml:ro" \
-            prom/alertmanager:v0.27.0 check-config /am.yml
+            prom/alertmanager:v0.28.1 check-config /am.yml
 
   # Rapport de couverture — **informatif, jamais bloquant** : aucun seuil, et
   # `continue-on-error` pour qu'une panne d'outillage ne ferme pas une PR.

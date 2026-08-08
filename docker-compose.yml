@@ -81,12 +81,15 @@ services:
     restart: unless-stopped
 
   # Routage des alertes (P3 — cf. docs/OBSERVABILITY.md). Reçoit les alertes
-  # *firing* de Prometheus, les regroupe/déduplique, et les route. Receiver de
-  # démo par défaut (aucune notification) — brancher un vrai canal en prod.
+  # *firing* de Prometheus, les regroupe/déduplique, et les route vers Discord
+  # (+ Watchdog vers un heartbeat externe). v0.28+ requise pour le webhook_url_file
+  # Discord (secret hors-git). Les secrets sont montés depuis ./secrets ; absents,
+  # Alertmanager démarre quand même (échec de notif journalisé, non fatal).
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.28.1
     volumes:
       - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./secrets:/etc/alertmanager/secrets:ro
     ports:
       - "9093:9093"
     restart: unless-stopped
