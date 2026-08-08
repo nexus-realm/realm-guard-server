@@ -1,0 +1,41 @@
+# Configuration Alertmanager (P3 — cf. docs/OBSERVABILITY.md).
+#
+# Reçoit les alertes de Prometheus, les regroupe/déduplique, et les route vers un
+# receiver. Le receiver par défaut ci-dessous **ne notifie nulle part** (démo) :
+# les alertes restent visibles dans l'UI/API Alertmanager (`:9093`). En prod,
+# remplacer par un vrai canal (voir les exemples commentés).
+
+route:
+  # Une notification par (alertname, sévérité) plutôt qu'une par série.
+  group_by: ["alertname", "severity"]
+  group_wait: 30s # laisse le temps d'agréger un premier lot
+  group_interval: 5m # délai avant d'émettre un nouveau lot pour un groupe
+  repeat_interval: 4h # ré-émission d'une alerte encore active
+  receiver: "defaut"
+
+receivers:
+  # Receiver de démo, sans notification. Le pipeline (Prometheus → Alertmanager)
+  # est fonctionnel ; brancher un canal réel en prod, p. ex. :
+  #
+  #   - name: "email"
+  #     email_configs:
+  #       - to: "ops@nexusrealm.fr"
+  #         from: "alertes@nexusrealm.fr"
+  #         smarthost: "smtp.example.com:587"
+  #         auth_username: "alertes@nexusrealm.fr"
+  #         auth_password_file: "/run/secrets/smtp_password"
+  #
+  #   - name: "slack"
+  #     slack_configs:
+  #       - api_url_file: "/run/secrets/slack_webhook"
+  #         channel: "#alertes"
+  #
+  # puis pointer `route.receiver` (ou une sous-route) dessus.
+  - name: "defaut"
+
+inhibit_rules:
+  # Une panne "critical" masque les "warning" corrélés du même job (évite le bruit
+  # quand une cible tombe : on ne veut pas aussi ses alertes de seuil).
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ["job"]
