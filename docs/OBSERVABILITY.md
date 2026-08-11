@@ -233,6 +233,13 @@ Règles livrées :
 L'**inhibition** évite le bruit (une panne `critical` masque les `warning` du même
 `job`) et le **throttling** (`repeat_interval: 4h`) borne les rappels.
 
+**Embed Discord.** Titre `[FIRING] <alerte> (<sévérité>)` + couleur (rouge *firing*
+/ vert *resolved*) ; corps = `summary` (gras) + `description` + la cible + un lien
+**cliquable** vers la métrique. Ce lien (`generatorURL`) n'est joignable que si
+Prometheus a un **`--web.external-url`** — sinon il pointe sur le hostname *interne*
+du conteneur (injoignable depuis un téléphone). Posé à `http://localhost:9090` en
+dev ; **à remplacer par l'URL publique en prod** (idem pour Alertmanager).
+
 **Secrets.** Le webhook Discord et l'URL de heartbeat sont lus depuis des **fichiers
 montés** (`webhook_url_file` / `url_file`, cf. `secrets/README.md`), jamais en clair
 dans la config. Absents → Alertmanager démarre quand même, l'envoi échoue et est
@@ -246,9 +253,10 @@ C'est ce qui « surveille le surveillant » (heartbeat optionnel : sans `heartbe
 le Watchdog reste inerte mais ne casse rien).
 
 > Vérifié en live de bout en bout (Alertmanager v0.28.1, secrets pointés sur un
-> sink HTTP) : `RedisInjoignable`/`CibleInjoignable` livrées à Discord en **embed**
-> (`{embeds:[{title:"[FIRING] …", color:rouge}]}`) ; le `Watchdog` routé vers le
-> heartbeat (**pas** Discord) ; démarrage sain **sans** les fichiers secrets.
+> sink HTTP) : `RedisInjoignable`/`CibleInjoignable` livrées à Discord en **embed
+> lisible** (summary + description + cible + **lien source joignable**
+> `http://localhost:9090/…`) ; le `Watchdog` routé vers le heartbeat (**pas**
+> Discord) ; démarrage sain **sans** les fichiers secrets.
 
 ### Alertes métier & anti-abus (via les métriques P4)
 
@@ -326,6 +334,9 @@ interne. Avant un déploiement exposé :
 - **Alertmanager** : déposer les secrets réels (`secrets/discord_webhook`,
   `secrets/heartbeat_url` — cf. `secrets/README.md`) ; brancher le heartbeat sur un
   moniteur externe pour activer le Watchdog.
+- **URL externes** : remplacer les `--web.external-url=http://localhost:{9090,9093}`
+  (Prometheus/Alertmanager) par les URL **publiques** — sinon les liens des
+  notifications Discord (source de l'alerte) restent injoignables hors de l'hôte.
 - **TLS** : terminer au reverse proxy (le token Bearer transite sinon en clair).
 - **Secrets** : ne pas réutiliser le `RG_OPAQUE_SETUP` de dev.
 

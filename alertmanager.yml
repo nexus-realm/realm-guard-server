@@ -29,7 +29,15 @@ receivers:
   - name: discord
     discord_configs:
       - webhook_url_file: /etc/alertmanager/secrets/discord_webhook
+        # Titre = état + alerte + sévérité (les labels bruts ne sont donc pas répétés
+        # dans le corps). Corps = message humain (summary/description), la cible, et
+        # un lien **cliquable** vers la métrique (joignable via web.external-url).
         title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}{{ if .CommonLabels.severity }} ({{ .CommonLabels.severity }}){{ end }}'
+        message: |
+          {{ range .Alerts }}**{{ .Annotations.summary }}** — {{ .Annotations.description }}
+          {{ if .Labels.instance }}Cible : `{{ .Labels.instance }}`{{ if .Labels.job }} · job `{{ .Labels.job }}`{{ end }}
+          {{ end }}{{ if .GeneratorURL }}[Ouvrir dans Prometheus]({{ .GeneratorURL }})
+          {{ end }}{{ end }}
         send_resolved: true
 
   # Battement externe (healthchecks.io, Dead Man's Snitch, ou instance self-host).
