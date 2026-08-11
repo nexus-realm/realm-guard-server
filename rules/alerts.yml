@@ -105,3 +105,18 @@ groups:
         annotations:
           summary: "Espace disque hôte < 10%"
           description: "{{ $value | humanizePercentage }} d'espace libre sur /."
+
+  - name: meta
+    rules:
+      # Dead-man's-switch — fire **en permanence** (`vector(1)` renvoie toujours 1).
+      # Routé (alertmanager.yml) vers un moniteur de battement **externe** : si ce
+      # heartbeat s'arrête (Prometheus, Alertmanager ou le serveur à terre), le
+      # moniteur externe alerte. C'est ce qui « surveille le surveillant » — sans
+      # lui, plus d'alertes du tout ressemble à « tout va bien ».
+      # `severity: none` : hors des canaux critical/warning et de l'inhibition.
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Pipeline d'alerte fonctionnel — fire en permanence, attendu."
