@@ -54,6 +54,13 @@ jobs:
             echo "✅ back-merge de release main -> develop"; exit 0
           fi
 
+          # dependabot/* -> develop : les PR de mise à jour de dépendances ne
+          # peuvent pas nommer en rg-<N> (pas de ticket) ; on les autorise. Le
+          # reste du gate (fmt/clippy/test/doc/deny) tourne et valide la mise à jour.
+          if [[ "$SOURCE_BRANCH" == dependabot/* && "$TARGET_BRANCH" == "develop" ]]; then
+            echo "✅ dependabot/* -> develop"; exit 0
+          fi
+
           echo "❌ ERREUR : nommage de branche source ou branche cible invalide."
           echo "Règles autorisées :"
           echo "- (feature|fix|chore)/rg-[numéro] -> develop"
@@ -61,6 +68,7 @@ jobs:
           echo "- staging -> main"
           echo "- main -> develop (back-merge de release)"
           echo "- hotfix/rg-[numéro] -> main"
+          echo "- dependabot/* -> develop (mise à jour de dépendances)"
           exit 1
 
   quality:
