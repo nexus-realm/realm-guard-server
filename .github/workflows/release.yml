@@ -51,7 +51,7 @@ jobs:
           ssh-key: ${{ secrets.CORE_REPO_DEPLOY_KEY }}
           path: realm-guard-core
 
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Install git-cliff + cargo-edit
         uses: taiki-e/install-action@v2
