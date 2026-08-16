@@ -11,6 +11,10 @@
   variables → **Dependabot*** — la CI checkoute le cœur en **sibling** ; sans ce
   secret les PR échouent.
 - Supply-chain gardé par **`cargo-deny`** (job `deny`).
+- **Ignorées** (`ignore` dans `dependabot.yml`, saut de minor bloqué, patches OK) :
+  `getrandom` (API 0.3+ + épinglage rand/opaque-ke, comme le cœur) et
+  `dtolnay/rust-toolchain` (son "tag" = version de Rust, pas un tag d'action →
+  Dependabot inventait des versions inexistantes ; **bump manuel**).
 
 ### ⚠️ cargo + dépendance `path` vers le cœur
 
