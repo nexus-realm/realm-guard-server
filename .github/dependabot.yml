@@ -28,6 +28,12 @@ updates:
       cargo-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    ignore:
+      # getrandom 0.3+ change l'API et est épinglé par l'écosystème rand/opaque-ke
+      # (même blocage que le cœur, cf. sa review). Patches 0.2.x OK, minor bloqué.
+      # (sha2/hkdf ne sont pas des deps directes du serveur → non proposées.)
+      - dependency-name: "getrandom"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   - package-ecosystem: "npm"
     directory: "/"
@@ -55,6 +61,11 @@ updates:
       github-actions:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    ignore:
+      # `dtolnay/rust-toolchain@<X>` : "tag" = version de Rust, pas un tag d'action.
+      # Dependabot invente des versions inexistantes (cf. review cœur PR #24). La
+      # toolchain se bumpe à la main (cf. docs/DEPENDENCIES.md).
+      - dependency-name: "dtolnay/rust-toolchain"
 
   - package-ecosystem: "docker"
     directory: "/"

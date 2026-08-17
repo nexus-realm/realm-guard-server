@@ -11,6 +11,10 @@
   variables → **Dependabot*** — la CI checkoute le cœur en **sibling** ; sans ce
   secret les PR échouent.
 - Supply-chain gardé par **`cargo-deny`** (job `deny`).
+- **Ignorées** (`ignore` dans `dependabot.yml`, saut de minor bloqué, patches OK) :
+  `getrandom` (API 0.3+ + épinglage rand/opaque-ke, comme le cœur) et
+  `dtolnay/rust-toolchain` (son "tag" = version de Rust, pas un tag d'action →
+  Dependabot inventait des versions inexistantes ; **bump manuel**).
 
 ### ⚠️ cargo + dépendance `path` vers le cœur
 
@@ -19,6 +23,30 @@ Dependabot clone le seul repo serveur → il **peut** ne pas résoudre le graphe
 et n'ouvrir **aucune PR cargo**. Vérifier le tableau de bord Dependabot ; si c'est
 le cas, traiter cargo **en manuel** (ci-dessous — le sibling cœur est présent en
 local).
+
+### Re-sync du lock après un bump de dépendances du cœur
+
+Corollaire de la dép `path` : quand les **deps du cœur** changent sur `develop`
+(un bump Dependabot mergé côté cœur, ex. `ed25519-dalek 2 → 3`), le `Cargo.lock`
+du serveur devient **périmé**. Le job **`docker-build`** (le seul à builder en
+`--locked`) échoue alors — les autres jobs, sans `--locked`, régénèrent le lock en
+silence et ne voient rien :
+
+```
+error: cannot update the lock file … because --locked was passed
+```
+
+Re-synchroniser (le sibling cœur **à jour** doit être présent en local), puis
+committer le lock :
+
+```bash
+cargo update -p realm-guard-core   # re-résout le sous-graphe du cœur (ciblé)
+cargo build --release --locked     # reproduit le check du Dockerfile → doit passer
+```
+
+Ça n'ajoute que la nouvelle génération de crates au lock (pas de churn des autres
+deps). **Le mobile n'est pas concerné** : il épingle le cœur par **tag**, pas par
+la branche `develop`.
 
 ## Manuel — procédure d'appoint
 
