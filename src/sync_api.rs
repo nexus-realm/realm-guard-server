@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth_api::AuthAccount;
 use crate::state::AppState;
-use crate::{deltas, snapshots};
+use crate::{deltas, observability, snapshots};
 
 /// Borne d'un delta (garde-fou anti-abus ; un delta de coffre est petit).
 const MAX_PAYLOAD_BYTES: usize = 1024 * 1024;
@@ -123,6 +123,7 @@ async fn push(
     let seq = deltas::append(&state.db, account.0, &payload)
         .await
         .map_err(internal)?;
+    observability::record_delta_pushed();
     // Réveil temps réel best-effort : le delta est déjà durable, un échec de nudge
     // ne fait que retarder les autres appareils jusqu'à leur prochain poll.
     crate::sync_ws::publish_nudge(&state, account.0, seq).await;
@@ -158,6 +159,7 @@ async fn pull(
         .await
         .map_err(internal)?;
 
+    observability::record_deltas_pulled(rows.len() as u64);
     Ok(Json(PullResp {
         deltas: rows
             .into_iter()
@@ -206,6 +208,7 @@ async fn put_snapshot(
         .map_err(internal)?
         .ok_or(StatusCode::CONFLICT)?;
 
+    observability::record_snapshot_created();
     Ok(Json(SnapshotPutResp {
         purged: result.purged,
     }))

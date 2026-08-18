@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::state::AppState;
-use crate::{accounts, rate_limit, sessions};
+use crate::{accounts, observability, rate_limit, sessions};
 
 /// Routes d'authentification (à monter dans l'app avec l'état).
 pub fn routes() -> Router<AppState> {
@@ -127,6 +127,7 @@ async fn register_finish(
     accounts::insert_account(&state.db, &body.username, &password_file)
         .await
         .map_err(|_| StatusCode::CONFLICT)?;
+    observability::record_registration();
     Ok(StatusCode::CREATED)
 }
 
@@ -143,6 +144,7 @@ async fn login_start(
         .await
         .map_err(internal)?
     {
+        observability::record_login_lockout();
         return Ok((
             StatusCode::TOO_MANY_REQUESTS,
             [(RETRY_AFTER, retry.to_string())],
@@ -202,6 +204,7 @@ async fn login_finish(
         rate_limit::record_failure(conn, &flow.username)
             .await
             .map_err(internal)?;
+        observability::record_login(false);
         return Err(StatusCode::UNAUTHORIZED);
     }
     let account_id = flow.account_id.ok_or(StatusCode::UNAUTHORIZED)?;
@@ -210,6 +213,7 @@ async fn login_finish(
     rate_limit::reset(conn.clone(), &flow.username)
         .await
         .map_err(internal)?;
+    observability::record_login(true);
     let token = sessions::create_session(conn, account_id)
         .await
         .map_err(internal)?;

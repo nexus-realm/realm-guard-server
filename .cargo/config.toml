@@ -1,0 +1,81 @@
+# Alias de couverture — `cargo-llvm-cov` (instrumentation LLVM native). Une fois :
+#
+#   rustup component add llvm-tools-preview
+#   cargo install cargo-llvm-cov
+#
+# DEUX MODES, parce que la surface HTTP du serveur n'est atteignable qu'avec
+# Postgres + Redis joignables (les tests d'intégration sont `#[ignore]`) :
+#
+#   cargo cov        unitaires seuls — ce que donne une machine nue (~34 %).
+#   cargo cov-full   + tests d'intégration — nécessite la stack Docker :
+#                    `docker compose up -d` puis
+#                    DATABASE_URL=postgres://realmguard:realmguard@localhost:5432/realmguard?sslmode=disable \
+#                    REDIS_URL=redis://localhost:6379 cargo cov-full
+#                    (les tests appliquent eux-mêmes les migrations)
+#
+# `cargo cov` seul **sous-estime** la couverture réelle : les modules DB
+# (accounts, deltas, sessions, snapshots, vault_keys, devices) n'ont pas d'autre
+# exercice que ces tests d'intégration.
+#
+# Exclusion : `src/main.rs` seulement — racine de composition (lecture d'env,
+# provider rustls, bind du listener), aucune logique à couvrir. Tout le reste
+# reste dans le périmètre, y compris ce qui est encore à 0 %.
+# Le motif accepte `/` **et** `\` : sur Windows llvm-cov rend `src\main.rs`, et
+# un motif en `/` seul ne filtrerait rien (vérifié).
+[alias]
+cov = [
+    "llvm-cov",
+    "--all-features",
+    "--summary-only",
+    "--ignore-filename-regex",
+    "(^|[/\\\\])main\\.rs$",
+]
+cov-full = [
+    "llvm-cov",
+    "--all-features",
+    "--summary-only",
+    "--ignore-filename-regex",
+    "(^|[/\\\\])main\\.rs$",
+    "--",
+    "--include-ignored",
+]
+# Variantes `-full` : mêmes rapports, tests d'intégration compris. Ce sont
+# celles à utiliser pour un rapport publié — sans elles le HTML/lcov montre les
+# modules DB à 0 %.
+cov-html = [
+    "llvm-cov",
+    "--all-features",
+    "--html",
+    "--ignore-filename-regex",
+    "(^|[/\\\\])main\\.rs$",
+    "--",
+    "--include-ignored",
+]
+cov-lcov = [
+    "llvm-cov",
+    "--all-features",
+    "--lcov",
+    "--output-path",
+    "lcov.info",
+    "--ignore-filename-regex",
+    "(^|[/\\\\])main\\.rs$",
+    "--",
+    "--include-ignored",
+]
+# Variantes unitaires seules (machine nue, sans Postgres/Redis).
+cov-html-unit = [
+    "llvm-cov",
+    "--all-features",
+    "--html",
+    "--ignore-filename-regex",
+    "(^|[/\\\\])main\\.rs$",
+]
+cov-lcov-unit = [
+    "llvm-cov",
+    "--all-features",
+    "--lcov",
+    "--output-path",
+    "lcov.info",
+    "--ignore-filename-regex",
+    "(^|[/\\\\])main\\.rs$",
+]

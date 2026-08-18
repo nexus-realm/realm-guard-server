@@ -796,4 +796,44 @@ async fn full_opaque_auth_flow() {
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(response.headers().contains_key("retry-after"));
     }
+
+    // --- Métriques métier (P4) : les opérations ci-dessus ont dû incrémenter les
+    // compteurs. On scrape `/metrics` (même recorder global que les handlers) et on
+    // vérifie que chaque compteur est présent et non nul — preuve que les handlers
+    // appellent bien les recorders (le test unitaire, lui, ne couvre que les
+    // recorders isolés). ---
+    {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let metrics = String::from_utf8(bytes.to_vec()).unwrap();
+
+        // Valeur d'une ligne Prometheus `<needle> <valeur>` (les commentaires
+        // `# TYPE`/`# HELP` commencent par `#`, jamais par le nom nu → ignorés).
+        let value = |needle: &str| -> f64 {
+            metrics
+                .lines()
+                .find(|l| l.starts_with(needle))
+                .and_then(|l| l.split_whitespace().last())
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or_else(|| panic!("métrique absente : {needle}\n{metrics}"))
+        };
+
+        assert!(value("rg_auth_registrations_total") >= 1.0);
+        assert!(value("rg_auth_logins_total{outcome=\"success\"}") >= 1.0);
+        assert!(value("rg_auth_logins_total{outcome=\"failure\"}") >= 1.0);
+        assert!(value("rg_auth_lockouts_total") >= 1.0);
+        assert!(value("rg_sync_deltas_pushed_total") >= 1.0);
+        assert!(value("rg_sync_deltas_pulled_total") >= 1.0);
+        assert!(value("rg_sync_snapshots_created_total") >= 1.0);
+    }
 }

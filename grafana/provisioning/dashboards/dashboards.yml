@@ -1,0 +1,15 @@
+# Provider de dashboards : Grafana charge tous les .json de /var/lib/grafana/dashboards
+# (monté depuis grafana/dashboards) au démarrage et les recharge périodiquement (P5).
+apiVersion: 1
+
+providers:
+  - name: realm-guard
+    orgId: 1
+    folder: "Realm Guard"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

@@ -57,16 +57,139 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:latest # à épingler en production
+    image: prom/prometheus:v2.53.2 # LTS épinglée (P5) — plus de :latest
     depends_on:
       - app
+      - postgres-exporter
+      - redis-exporter
+      - node-exporter
+      - cadvisor
+      - alertmanager
+    # `command` explicite (P5) : rétention TSDB bornée + recharge à chaud. Override
+    # le défaut de l'image, d'où le rappel de `--config.file`/`--storage.tsdb.path`.
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle" # POST /-/reload sans redémarrer le conteneur
+      # Sans ça, le `generatorURL` des alertes (lien « Source » dans Discord) pointe
+      # sur le hostname INTERNE du conteneur → injoignable. En dev = localhost ;
+      # en prod, mettre l'URL publique de Prometheus.
+      - "--web.external-url=http://localhost:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./rules:/etc/prometheus/rules:ro # règles d'alerte (P3)
+      - prom_data:/prometheus # TSDB persistante (sinon rétention sans effet)
     ports:
       - "9090:9090"
+    restart: unless-stopped
+
+  # Routage des alertes (P3 — cf. docs/OBSERVABILITY.md). Reçoit les alertes
+  # *firing* de Prometheus, les regroupe/déduplique, et les route vers Discord
+  # (+ Watchdog vers un heartbeat externe). v0.28+ requise pour le webhook_url_file
+  # Discord (secret hors-git). Les secrets sont montés depuis ./secrets ; absents,
+  # Alertmanager démarre quand même (échec de notif journalisé, non fatal).
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    # `command` explicite (reprend les défauts de l'image) pour ajouter l'URL
+    # externe : rend joignables les liens générés par Alertmanager (silences).
+    # En prod, mettre l'URL publique d'Alertmanager.
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.external-url=http://localhost:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./secrets:/etc/alertmanager/secrets:ro
+    ports:
+      - "9093:9093"
+    restart: unless-stopped
+
+  # ── Exporters de métriques infra (P2 — cf. docs/OBSERVABILITY.md) ──────────
+  # Chacun expose /metrics sur le réseau interne ; Prometheus les scrape (cf.
+  # prometheus.yml). Aucun port publié sur l'hôte (hygiène).
+
+  # Postgres : connexions, taille de base, up/down, statistiques de requêtes.
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    environment:
+      # ⚠️ DEV : réutilise le compte applicatif. En prod, un rôle de supervision
+      # dédié (droits `pg_monitor`) fourni via secret monté, jamais ce compte.
+      DATA_SOURCE_NAME: "postgresql://realmguard:realmguard@postgres:5432/realmguard?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Redis : mémoire utilisée, clients connectés, up/down, hits/miss.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Hôte : CPU / RAM / disque. Sur Docker Desktop, mesure la VM Linux
+  # sous-jacente (pas Windows) ; en prod sur hôte Linux, c'est bien la machine.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    restart: unless-stopped
+
+  # Par conteneur : CPU / RAM / réseau / FS de chaque service. Accès privilégié
+  # au runtime requis ; sur Docker Desktop Windows, le support est partiel.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    restart: unless-stopped
+
+  # Visualisation (P5 — cf. docs/OBSERVABILITY.md). Datasource + dashboards
+  # provisionnés **as-code** depuis grafana/provisioning et grafana/dashboards :
+  # aucun clic, tout est versionné et reproductible.
+  grafana:
+    image: grafana/grafana:11.2.2
+    depends_on:
+      - prometheus
+    environment:
+      # ⚠️ DEV : accès anonyme en lecture (voir les dashboards sans login). En prod,
+      # désactiver l'anonyme et poser un mot de passe admin fort via secret monté.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_SECURITY_ADMIN_PASSWORD: "admin" # DEV ONLY
+      GF_USERS_DEFAULT_THEME: "dark"
+    volumes:
+      # Monter les sous-dossiers ciblés (pas le parent) : sinon on masque les
+      # dossiers de provisioning par défaut de l'image (plugins/, alerting/…) et
+      # Grafana journalise des erreurs « répertoire absent » bénignes.
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
     restart: unless-stopped
 
 volumes:
   pgdata:
   caddy_data:
   caddy_config:
+  prom_data:
+  grafana_data:

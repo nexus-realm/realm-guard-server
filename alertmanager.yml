@@ -1,0 +1,56 @@
+# Configuration Alertmanager (P3 + receiver Discord & Watchdog).
+#
+# Reçoit les alertes de Prometheus, les regroupe/déduplique/inhibe, et les route.
+# Les secrets (webhook Discord, URL de heartbeat) ne sont **jamais** en clair ici :
+# ils sont lus depuis des fichiers montés (`*_file`) — voir secrets/ et
+# docs/OBSERVABILITY.md. Nécessite Alertmanager ≥ 0.28 (webhook_url_file Discord).
+
+route:
+  receiver: discord # défaut : warnings + tout ce qui n'a pas de route dédiée
+  group_by: ["alertname", "severity"]
+  group_wait: 30s # laisse le temps d'agréger un premier lot
+  group_interval: 5m # délai avant d'émettre un nouveau lot pour un groupe
+  repeat_interval: 4h # ré-émission d'une alerte encore active
+  routes:
+    # Le Watchdog fire en permanence : route dédiée vers le moniteur de battement
+    # externe, **jamais** vers Discord (sinon spam toutes les minutes). Intervalles
+    # courts = un ping régulier que le moniteur externe surveille.
+    - matchers: ['alertname="Watchdog"']
+      receiver: watchdog
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 1m
+    # Les pannes (critical) passent devant, avec un regroupement plus réactif.
+    - matchers: ['severity="critical"']
+      receiver: discord
+      group_wait: 10s
+
+receivers:
+  - name: discord
+    discord_configs:
+      - webhook_url_file: /etc/alertmanager/secrets/discord_webhook
+        # Titre = état + alerte + sévérité (les labels bruts ne sont donc pas répétés
+        # dans le corps). Corps = message humain (summary/description), la cible, et
+        # un lien **cliquable** vers la métrique (joignable via web.external-url).
+        title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}{{ if .CommonLabels.severity }} ({{ .CommonLabels.severity }}){{ end }}'
+        message: |
+          {{ range .Alerts }}**{{ .Annotations.summary }}** — {{ .Annotations.description }}
+          {{ if .Labels.instance }}Cible : `{{ .Labels.instance }}`{{ if .Labels.job }} · job `{{ .Labels.job }}`{{ end }}
+          {{ end }}{{ if .GeneratorURL }}[Ouvrir dans Prometheus]({{ .GeneratorURL }})
+          {{ end }}{{ end }}
+        send_resolved: true
+
+  # Battement externe (healthchecks.io, Dead Man's Snitch, ou instance self-host).
+  # `url_file` absent/placeholder ⇒ le POST échoue et est journalisé, sans planter
+  # Alertmanager : le Watchdog reste inerte tant que le heartbeat n'est pas branché.
+  - name: watchdog
+    webhook_configs:
+      - url_file: /etc/alertmanager/secrets/heartbeat_url
+        send_resolved: false
+
+inhibit_rules:
+  # Une panne "critical" masque les "warning" corrélés du même job (évite le bruit
+  # quand une cible tombe : on ne veut pas aussi ses alertes de seuil).
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ["job"]
