@@ -24,13 +24,14 @@ et n'ouvrir **aucune PR cargo**. Vérifier le tableau de bord Dependabot ; si c'
 le cas, traiter cargo **en manuel** (ci-dessous — le sibling cœur est présent en
 local).
 
-### Re-sync du lock après un bump de dépendances du cœur
+### Re-sync du lock après un changement du cœur (bump de dep **ou release**)
 
-Corollaire de la dép `path` : quand les **deps du cœur** changent sur `develop`
-(un bump Dependabot mergé côté cœur, ex. `ed25519-dalek 2 → 3`), le `Cargo.lock`
-du serveur devient **périmé**. Le job **`docker-build`** (le seul à builder en
-`--locked`) échoue alors — les autres jobs, sans `--locked`, régénèrent le lock en
-silence et ne voient rien :
+Corollaire de la dép `path` : dès que le cœur change sur `develop` — un bump
+Dependabot mergé côté cœur (ex. `ed25519-dalek 2 → 3`) **ou un release du cœur qui
+bump sa `version`** (ex. `1.0.0 → 1.0.1`) — le `Cargo.lock` du serveur (qui épingle
+la **version** et le sous-graphe du cœur) devient **périmé**. Le job **`docker-build`**
+(le seul à builder en `--locked`) échoue alors — les autres jobs, sans `--locked`,
+régénèrent le lock en silence :
 
 ```
 error: cannot update the lock file … because --locked was passed
@@ -42,7 +43,13 @@ committer le lock :
 ```bash
 cargo update -p realm-guard-core   # re-résout le sous-graphe du cœur (ciblé)
 cargo build --release --locked     # reproduit le check du Dockerfile → doit passer
+cargo deny check                   # voir l'avertissement ci-dessous
 ```
+
+⚠️ **Le job `deny` peut échouer pour deux raisons distinctes** : (1) le même décalage
+`--locked`, et (2) une **vulnérabilité réelle** que le lock ré-résolu fait apparaître
+(cargo-deny lit la base d'advisories à jour — ex. `RUSTSEC-2026-0258` sur `h2`). Dans
+ce cas, patcher aussi le crate visé : `cargo update -p <crate>`.
 
 Ça n'ajoute que la nouvelle génération de crates au lock (pas de churn des autres
 deps). **Le mobile n'est pas concerné** : il épingle le cœur par **tag**, pas par
