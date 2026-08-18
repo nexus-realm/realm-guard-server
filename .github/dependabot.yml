@@ -1,0 +1,81 @@
+# Mises à jour de dépendances — mensuelles, groupées (cf. docs/DEPENDENCIES.md).
+#
+# Gérés : cargo, npm (husky/commitlint), GitHub Actions, docker (le Dockerfile).
+# NON géré : les images du docker-compose.yml — Dependabot ne scanne pas les
+# fichiers compose (voir la procédure manuelle). Supply-chain gardé par cargo-deny.
+#
+# ⚠️ cargo : le manifeste dépend du cœur en `path` (`../realm-guard-core`), hors du
+# repo. Dependabot clone le seul repo serveur → il se peut qu'il n'arrive pas à
+# résoudre le graphe cargo (dép path absente) et n'ouvre aucune PR cargo. Vérifier
+# le tableau de bord Dependabot ; si c'est le cas, cargo passe en manuel (le sibling
+# est présent en local, cf. docs/DEPENDENCIES.md).
+#
+# Cible `develop` ; branches `dependabot/*` autorisées par `check-branches`.
+# Prérequis : ajouter `CORE_REPO_DEPLOY_KEY` au *Dependabot secrets* store (la CI
+# checkoute le cœur en sibling) — sinon les PR seront rouges faute de secret.
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      cargo-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # getrandom 0.3+ change l'API et est épinglé par l'écosystème rand/opaque-ke
+      # (même blocage que le cœur, cf. sa review). Patches 0.2.x OK, minor bloqué.
+      # (sha2/hkdf ne sont pas des deps directes du serveur → non proposées.)
+      - dependency-name: "getrandom"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      github-actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # `dtolnay/rust-toolchain@<X>` : "tag" = version de Rust, pas un tag d'action.
+      # Dependabot invente des versions inexistantes (cf. review cœur PR #24). La
+      # toolchain se bumpe à la main (cf. docs/DEPENDENCIES.md).
+      - dependency-name: "dtolnay/rust-toolchain"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      docker:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

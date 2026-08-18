@@ -54,6 +54,13 @@ jobs:
             echo "✅ back-merge de release main -> develop"; exit 0
           fi
 
+          # dependabot/* -> develop : les PR de mise à jour de dépendances ne
+          # peuvent pas nommer en rg-<N> (pas de ticket) ; on les autorise. Le
+          # reste du gate (fmt/clippy/test/doc/deny) tourne et valide la mise à jour.
+          if [[ "$SOURCE_BRANCH" == dependabot/* && "$TARGET_BRANCH" == "develop" ]]; then
+            echo "✅ dependabot/* -> develop"; exit 0
+          fi
+
           echo "❌ ERREUR : nommage de branche source ou branche cible invalide."
           echo "Règles autorisées :"
           echo "- (feature|fix|chore)/rg-[numéro] -> develop"
@@ -61,6 +68,7 @@ jobs:
           echo "- staging -> main"
           echo "- main -> develop (back-merge de release)"
           echo "- hotfix/rg-[numéro] -> main"
+          echo "- dependabot/* -> develop (mise à jour de dépendances)"
           exit 1
 
   quality:
@@ -71,11 +79,11 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout serveur
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: realm-guard-server
       - name: Checkout cœur (sibling, deploy key lecture)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: nexus-realm/realm-guard-core
           # Le cœur est pris sur la même branche cible que la PR serveur
@@ -113,11 +121,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout serveur
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: realm-guard-server
       - name: Checkout cœur (sibling)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: nexus-realm/realm-guard-core
           # Le cœur est pris sur la même branche cible que la PR serveur
@@ -131,6 +139,105 @@ jobs:
         with:
           manifest-path: realm-guard-server/Cargo.toml
 
+  # Lint des configs d'observabilité (P3/P5) : règles d'alerte + config Alertmanager
+  # validées par promtool/amtool, via les **images épinglées** (mêmes versions que
+  # docker-compose) → une règle cassée ferme la PR au lieu de partir en prod.
+  # **Bloquant** (ce sont des fichiers versionnés, testables hors ligne) et
+  # indépendant du cœur (aucune dépendance Rust → checkout simple, pas de sibling).
+  observability-lint:
+    needs: check-branches
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: promtool — config Prometheus + règles d'alerte
+        # `check config` (sans --syntax-only) suit les `rule_files` et valide aussi
+        # les règles (PromQL + durées) : couvre prometheus.yml ET rules/alerts.yml.
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            -v "$PWD/rules:/etc/prometheus/rules:ro" \
+            prom/prometheus:v2.53.2 check config /etc/prometheus/prometheus.yml
+      - name: amtool — config Alertmanager
+        run: |
+          docker run --rm --entrypoint amtool \
+            -v "$PWD/alertmanager.yml:/am.yml:ro" \
+            prom/alertmanager:v0.28.1 check-config /am.yml
+
+  # Rapport de couverture — **informatif, jamais bloquant** : aucun seuil, et
+  # `continue-on-error` pour qu'une panne d'outillage ne ferme pas une PR.
+  #
+  # Contrairement au job `quality` (qui n'exécute que les tests unitaires), on
+  # monte Postgres + Redis et on lève `--include-ignored` : sans ça les modules
+  # DB (accounts, deltas, sessions, snapshots, vault_keys) restent à 0 % et le
+  # chiffre publié n'aurait aucun sens. Les tests appliquent eux-mêmes les
+  # migrations.
+  coverage:
+    needs: check-branches
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: realmguard
+          POSTGRES_PASSWORD: realmguard
+          POSTGRES_DB: realmguard
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U realmguard"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout serveur
+        uses: actions/checkout@v7
+        with:
+          path: realm-guard-server
+      - name: Checkout cœur (sibling, deploy key lecture)
+        uses: actions/checkout@v7
+        with:
+          repository: nexus-realm/realm-guard-core
+          ref: ${{ github.base_ref || github.ref_name }}
+          ssh-key: ${{ secrets.CORE_REPO_DEPLOY_KEY }}
+          path: realm-guard-core
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: realm-guard-server
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Couverture (tests d'intégration compris)
+        working-directory: realm-guard-server
+        env:
+          DATABASE_URL: postgres://realmguard:realmguard@localhost:5432/realmguard?sslmode=disable
+          REDIS_URL: redis://localhost:6379
+        run: cargo cov-full | tee coverage.txt
+      - name: Résumé
+        if: always()
+        working-directory: realm-guard-server
+        run: |
+          {
+            echo '## Couverture (serveur, intégration comprise)'
+            echo '```'
+            cat coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   docker-build:
     needs: check-branches
     if: github.event.action != 'edited'
@@ -138,11 +245,11 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout serveur
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: realm-guard-server
       - name: Checkout cœur (sibling)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: nexus-realm/realm-guard-core
           # Le cœur est pris sur la même branche cible que la PR serveur

@@ -99,3 +99,161 @@ impl fmt::Debug for Config {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    const SETUP_B64: &str = "c2VjcmV0"; // "secret"
+
+    /// L'environnement est global au processus alors que `cargo test` exécute en
+    /// parallèle : ces tests s'excluent mutuellement.
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            // Un test qui panique empoisonne le verrou : on continue quand même,
+            // chaque test repart d'un environnement vierge.
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Repart d'un environnement vierge pour toutes les variables lues ici.
+    fn clear_env() {
+        for key in [
+            "RG_SERVER_ADDR",
+            "DATABASE_URL",
+            "REDIS_URL",
+            "RG_OPAQUE_SETUP",
+            "RG_OPAQUE_SETUP_FILE",
+        ] {
+            // SAFETY : mutation d'env sérialisée par `env_lock`, mono-thread ici.
+            unsafe { env::remove_var(key) };
+        }
+    }
+
+    fn set(key: &str, value: &str) {
+        // SAFETY : idem — sous `env_lock`.
+        unsafe { env::set_var(key, value) };
+    }
+
+    #[test]
+    fn defaults_apply_when_only_the_secret_is_set() {
+        let _guard = env_lock();
+        clear_env();
+        set("RG_OPAQUE_SETUP", SETUP_B64);
+
+        let config = Config::from_env().expect("config");
+
+        assert_eq!(config.addr.to_string(), "0.0.0.0:8080");
+        assert_eq!(config.database_url, DEFAULT_DATABASE_URL);
+        assert_eq!(config.redis_url, DEFAULT_REDIS_URL);
+        assert_eq!(config.opaque_setup, b"secret");
+    }
+
+    #[test]
+    fn env_overrides_addr_and_urls() {
+        let _guard = env_lock();
+        clear_env();
+        set("RG_OPAQUE_SETUP", SETUP_B64);
+        set("RG_SERVER_ADDR", "127.0.0.1:9999");
+        set("DATABASE_URL", "postgres://u:p@db:5432/x");
+        set("REDIS_URL", "redis://cache:6379");
+
+        let config = Config::from_env().expect("config");
+
+        assert_eq!(config.addr.to_string(), "127.0.0.1:9999");
+        assert_eq!(config.database_url, "postgres://u:p@db:5432/x");
+        assert_eq!(config.redis_url, "redis://cache:6379");
+    }
+
+    #[test]
+    fn malformed_addr_is_rejected() {
+        let _guard = env_lock();
+        clear_env();
+        set("RG_OPAQUE_SETUP", SETUP_B64);
+        set("RG_SERVER_ADDR", "pas-une-adresse");
+
+        let error = Config::from_env().expect_err("adresse invalide");
+
+        assert!(error.to_string().contains("RG_SERVER_ADDR"));
+    }
+
+    /// Fail-closed : sans secret, on démarre pas — régénérer en silence
+    /// invaliderait tous les comptes existants.
+    #[test]
+    fn missing_opaque_setup_fails_closed() {
+        let _guard = env_lock();
+        clear_env();
+
+        let error = Config::from_env().expect_err("secret absent");
+
+        assert!(error.to_string().contains("OPAQUE"));
+    }
+
+    #[test]
+    fn invalid_base64_secret_is_rejected() {
+        let _guard = env_lock();
+        clear_env();
+        set("RG_OPAQUE_SETUP", "pas du base64 !!");
+
+        let error = Config::from_env().expect_err("base64 invalide");
+
+        assert!(error.to_string().contains("base64"));
+    }
+
+    #[test]
+    fn empty_secret_is_rejected() {
+        let _guard = env_lock();
+        clear_env();
+        set("RG_OPAQUE_SETUP", "");
+
+        assert!(Config::from_env().is_err());
+    }
+
+    #[test]
+    fn setup_file_wins_over_inline_and_is_trimmed() {
+        let _guard = env_lock();
+        clear_env();
+        let path = env::temp_dir().join(format!("rg-opaque-{}.b64", std::process::id()));
+        // Retour à la ligne final : ce qu'écrit un secret monté par l'orchestrateur.
+        std::fs::write(&path, format!("{SETUP_B64}\n")).expect("écriture");
+        set("RG_OPAQUE_SETUP", "YXV0cmU="); // "autre" — doit être ignoré
+        set("RG_OPAQUE_SETUP_FILE", &path.to_string_lossy());
+
+        let config = Config::from_env().expect("config");
+
+        assert_eq!(config.opaque_setup, b"secret");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn unreadable_setup_file_is_an_error() {
+        let _guard = env_lock();
+        clear_env();
+        set("RG_OPAQUE_SETUP_FILE", "/chemin/qui/n/existe/pas.b64");
+
+        let error = Config::from_env().expect_err("fichier illisible");
+
+        assert!(error.to_string().contains("RG_OPAQUE_SETUP_FILE"));
+    }
+
+    /// Un `{:?}` de la config part dans les logs : ni les URLs (porteuses de mot
+    /// de passe) ni le secret OPAQUE ne doivent y apparaître.
+    #[test]
+    fn debug_redacts_every_secret() {
+        let config = Config {
+            addr: "127.0.0.1:8080".parse().expect("adresse"),
+            database_url: "postgres://user:motdepasse@db/x".to_string(),
+            redis_url: "redis://:motdepasse@cache".to_string(),
+            opaque_setup: b"secret".to_vec(),
+        };
+
+        let rendered = format!("{config:?}");
+
+        assert!(!rendered.contains("motdepasse"));
+        assert!(!rendered.contains("secret"), "octets du setup exposés");
+        assert!(rendered.contains("127.0.0.1:8080"), "adresse non secrète");
+        assert!(rendered.contains("6 octets"));
+    }
+}

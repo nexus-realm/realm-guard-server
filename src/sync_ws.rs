@@ -26,6 +26,7 @@ use redis::AsyncCommands;
 use uuid::Uuid;
 
 use crate::auth_api::AuthAccount;
+use crate::observability;
 use crate::state::AppState;
 
 /// Canal pub/sub d'un compte (les deltas d'un compte ne concernent que ses appareils).
@@ -66,6 +67,10 @@ async fn handle(mut socket: WebSocket, account_id: Uuid, state: AppState) {
     if pubsub.subscribe(channel(account_id)).await.is_err() {
         return;
     }
+
+    // Connexion établie : la jauge suit les WS actifs. Le garde décrémente au drop
+    // (fin de boucle : fermeture client, erreur d'envoi, ou pub/sub coupé).
+    let _conn = observability::track_ws_connection();
 
     let mut messages = pubsub.on_message();
     loop {
