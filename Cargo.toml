@@ -1,6 +1,6 @@
 [package]
 name = "realm-guard-server"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Sync server (Axum) for Realm Guard — E2EE multi-device."
