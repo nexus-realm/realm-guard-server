@@ -79,11 +79,11 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout serveur
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: realm-guard-server
       - name: Checkout cœur (sibling, deploy key lecture)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: nexus-realm/realm-guard-core
           # Le cœur est pris sur la même branche cible que la PR serveur
@@ -121,11 +121,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout serveur
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: realm-guard-server
       - name: Checkout cœur (sibling)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: nexus-realm/realm-guard-core
           # Le cœur est pris sur la même branche cible que la PR serveur
@@ -150,7 +150,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: promtool — config Prometheus + règles d'alerte
         # `check config` (sans --syntax-only) suit les `rule_files` et valide aussi
         # les règles (PromQL + durées) : couvre prometheus.yml ET rules/alerts.yml.
@@ -204,11 +204,11 @@ jobs:
           --health-retries 10
     steps:
       - name: Checkout serveur
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: realm-guard-server
       - name: Checkout cœur (sibling, deploy key lecture)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: nexus-realm/realm-guard-core
           ref: ${{ github.base_ref || github.ref_name }}
@@ -245,11 +245,11 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Checkout serveur
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: realm-guard-server
       - name: Checkout cœur (sibling)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: nexus-realm/realm-guard-core
           # Le cœur est pris sur la même branche cible que la PR serveur

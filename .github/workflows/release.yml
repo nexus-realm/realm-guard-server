@@ -36,13 +36,13 @@ jobs:
       contents: write # pousse le commit chore(release) + le tag
     steps:
       - name: Checkout serveur
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           path: realm-guard-server
 
       - name: Checkout cœur (sibling, deploy key lecture)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: nexus-realm/realm-guard-core
           # Événement `push` ⇒ `base_ref` est vide : on prend le cœur sur la
@@ -121,7 +121,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve tag
         id: tag
